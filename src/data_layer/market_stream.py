@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable, Any, Union
 import websocket
 import threading
 from datetime import datetime
@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Import the callback manager
+from src.utils.callback_manager import CallbackManager
 
 class MarketStream:
     """
@@ -38,6 +41,9 @@ class MarketStream:
         self.subscriptions = {}
         self.callbacks = {}
         self.request_id = 1
+        
+        # Callback manager for handling event callbacks
+        self.callback_manager = CallbackManager()
         
         # Threading
         self.connection_thread = None
@@ -289,6 +295,39 @@ class MarketStream:
         self._send_message(request)
         self.logger.info(f"Subscribed to tick data for {symbol}")
         return True
+        
+    def unsubscribe_ticks(self, symbol: str) -> bool:
+        """Unsubscribe from tick data for a symbol
+        
+        Args:
+            symbol: Trading symbol (e.g. "R_100")
+            
+        Returns:
+            bool: Success status
+        """
+        if not self.is_connected:
+            self.logger.error("Not connected to WebSocket")
+            return False
+            
+        subscription_key = f"tick_{symbol}"
+        if subscription_key not in self.subscriptions:
+            self.logger.warning(f"Not subscribed to tick data for {symbol}")
+            return False
+            
+        # Get the original subscription request
+        request = self.subscriptions[subscription_key]
+        
+        # Send unsubscribe request (copy original but set subscribe to 0)
+        unsub_request = request.copy()
+        unsub_request["subscribe"] = 0
+        
+        self._send_message(unsub_request)
+        
+        # Remove from active subscriptions
+        del self.subscriptions[subscription_key]
+        
+        self.logger.info(f"Unsubscribed from tick data for {symbol}")
+        return True
     
     def subscribe_candles(self, symbol: str, interval: str = "1m", callback: Optional[Callable] = None) -> bool:
         """Subscribe to candle data for a symbol"""
@@ -326,6 +365,83 @@ class MarketStream:
         self._send_message(request)
         self.logger.info(f"Subscribed to {interval} candle data for {symbol}")
         return True
+        
+    def subscribe_ohlc(self, symbol: str, interval: str = "1m", callback: Optional[Callable] = None) -> bool:
+        """Subscribe to OHLC data for a symbol
+        
+        Args:
+            symbol: Trading symbol (e.g. "R_100")
+            interval: Time interval (1m, 5m, 15m, 1h, 4h, 1d)
+            callback: Optional callback function
+            
+        Returns:
+            bool: Success status
+        """
+        if not self.is_connected:
+            self.logger.error("Not connected to WebSocket")
+            return False
+        
+        # Convert interval to Deriv API format
+        interval_map = {
+            "1m": 60,
+            "5m": 300,
+            "15m": 900,
+            "1h": 3600,
+            "4h": 14400,
+            "1d": 86400
+        }
+        
+        granularity = interval_map.get(interval, 60)
+        req_id = self._get_next_request_id()
+        
+        request = {
+            "ohlc": symbol,
+            "granularity": granularity,
+            "subscribe": 1,
+            "req_id": req_id
+        }
+        
+        if callback:
+            self.callbacks[req_id] = callback
+        
+        self.subscriptions[f"ohlc_{symbol}_{interval}"] = request
+        self._send_message(request)
+        self.logger.info(f"Subscribed to {interval} OHLC data for {symbol}")
+        return True
+    
+    def unsubscribe_ohlc(self, symbol: str, interval: str = "1m") -> bool:
+        """Unsubscribe from OHLC data for a symbol
+        
+        Args:
+            symbol: Trading symbol (e.g. "R_100")
+            interval: Time interval (1m, 5m, 15m, 1h, 4h, 1d)
+            
+        Returns:
+            bool: Success status
+        """
+        if not self.is_connected:
+            self.logger.error("Not connected to WebSocket")
+            return False
+            
+        subscription_key = f"ohlc_{symbol}_{interval}"
+        if subscription_key not in self.subscriptions:
+            self.logger.warning(f"Not subscribed to OHLC data for {symbol} with interval {interval}")
+            return False
+            
+        # Get the original subscription request
+        request = self.subscriptions[subscription_key]
+        
+        # Send unsubscribe request (copy original but set subscribe to 0)
+        unsub_request = request.copy()
+        unsub_request["subscribe"] = 0
+        
+        self._send_message(unsub_request)
+        
+        # Remove from active subscriptions
+        del self.subscriptions[subscription_key]
+        
+        self.logger.info(f"Unsubscribed from {interval} OHLC data for {symbol}")
+        return True
     
     def _handle_tick_data(self, data: Dict):
         """Handle incoming tick data"""
@@ -341,6 +457,9 @@ class MarketStream:
             callback_key = f"tick_{symbol}"
             if callback_key in self.callbacks:
                 self.callbacks[callback_key](data)
+            
+            # Trigger callbacks registered via the callback manager
+            self.callback_manager.trigger_callbacks("tick", data)
     
     def _handle_candle_data(self, data: Dict):
         """Handle incoming candle data"""
@@ -370,6 +489,15 @@ class MarketStream:
             timestamp = ohlc.get('epoch')
             
             self.logger.info(f"OHLC - {symbol}: O:{open_price} H:{high_price} L:{low_price} C:{close_price} at {datetime.fromtimestamp(timestamp)}")
+            
+            # Call any registered callbacks for this symbol
+            interval = self._get_interval_from_granularity(data.get('granularity', 60))
+            callback_key = f"ohlc_{symbol}_{interval}"
+            if callback_key in self.callbacks:
+                self.callbacks[callback_key](data)
+                
+            # Trigger callbacks registered via the callback manager
+            self.callback_manager.trigger_callbacks("ohlc", data)
     
     def _resubscribe(self):
         """Re-establish all subscriptions after reconnection"""
@@ -390,6 +518,45 @@ class MarketStream:
     def is_ready(self) -> bool:
         """Check if the stream is ready for subscriptions"""
         return self.is_connected and (not self.auth_token or self.is_authenticated)
+        
+    def _get_interval_from_granularity(self, granularity: int) -> str:
+        """Convert granularity (seconds) to interval string"""
+        granularity_to_interval = {
+            60: "1m",
+            300: "5m",
+            900: "15m",
+            3600: "1h",
+            14400: "4h",
+            86400: "1d"
+        }
+        return granularity_to_interval.get(granularity, "1m")
+        
+    def add_callback(self, event_type: str, callback: Callable) -> None:
+        """Add a callback for a specific event type
+        
+        Args:
+            event_type: Event type (e.g., "tick", "ohlc")
+            callback: Callback function to be called when event occurs
+        """
+        self.callback_manager.add_callback(event_type, callback)
+        self.logger.info(f"Added callback for event type: {event_type}")
+    
+    def remove_callback(self, event_type: str, callback: Callable) -> bool:
+        """Remove a callback for a specific event type
+        
+        Args:
+            event_type: Event type (e.g., "tick", "ohlc")
+            callback: Callback function to be removed
+            
+        Returns:
+            bool: True if callback was successfully removed, False otherwise
+        """
+        result = self.callback_manager.remove_callback(event_type, callback)
+        if result:
+            self.logger.info(f"Removed callback for event type: {event_type}")
+        else:
+            self.logger.warning(f"Failed to remove callback for event type: {event_type}")
+        return result
     
     # Additional response handlers for all API message types
     def _handle_balance_response(self, data: Dict):
@@ -464,6 +631,9 @@ class MarketStream:
             
             status = "CLOSED" if is_sold else "OPEN"
             self.logger.info(f"Contract {contract_id} ({status}): Spot {current_spot}, P&L ${profit:.2f}")
+            
+            # Trigger callbacks registered via the callback manager
+            self.callback_manager.trigger_callbacks("contract", data)
     
     def _handle_forget_response(self, data: Dict):
         """Handle forget subscription response"""
