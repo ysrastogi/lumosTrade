@@ -1,0 +1,39 @@
+websocket:
+  url: "wss://ws.derivws.com/websockets/v3"
+  app_id: "106101"
+  reconnect_attempts: 5
+  reconnect_delay: 5
+  heartbeat_interval: 30
+
+market_data:
+  symbols:
+    - "R_10"  # Volatility 10 Index
+    - "R_25"  # Volatility 25 Index
+    - "R_50"  # Volatility 50 Index
+    - "R_75"  # Volatility 75 Index
+    - "R_100" # Volatility 100 Index
+    - "EURUSD"
+    - "GBPUSD"
+    - "USDJPY"
+  
+  stream_types:
+    - "tick"
+    - "candles"
+    - "ohlc"
+  
+  candle_intervals:
+    - "1m"
+    - "5m"
+    - "15m"
+    - "1h"
+    - "4h"
+    - "1d"
+
+trading:
+  default_stake: 10
+  max_stake: 1000
+  risk_management:
+    max_loss_per_day: 100
+    max_trades_per_day: 50
+    stop_loss_percentage: 5
+    take_profit_percentage: 10
