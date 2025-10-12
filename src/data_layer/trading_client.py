@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 import threading
 from .market_stream import MarketStream
+from src.utils.callback_manager import CallbackManager
 
 class TradeType(Enum):
     """Trade types supported by Deriv API"""
@@ -95,6 +96,9 @@ class TradingClient:
         # Logging
         self.logger = logging.getLogger(__name__)
         logging.basicConfig(level=logging.INFO)
+        
+        # Callback manager
+        self.callback_manager = CallbackManager()
     
     def connect(self) -> bool:
         """Connect to Deriv API"""
@@ -183,13 +187,22 @@ class TradingClient:
             self._handle_error_response(data)
     
     # 1. 🔐 AUTHORIZATION
-    def authorize(self) -> bool:
-        """Authorize WebSocket session"""
-        if not self.market_stream.auth_token:
+    def authorize(self, token: str = None, custom_callback: Callable = None) -> bool:
+        """Authorize WebSocket session
+        
+        Args:
+            token: Optional token to use for authorization. If not provided,
+                  will use the token from market_stream.auth_token.
+            custom_callback: Optional callback to handle the authorization response.
+                            If provided, this callback will be called with the response data.
+        """
+        auth_token = token or self.market_stream.auth_token
+        
+        if not auth_token:
             self.logger.error("No auth token available")
             return False
         
-        request = {"authorize": self.market_stream.auth_token}
+        request = {"authorize": auth_token}
         
         def auth_callback(data):
             if data.get('authorize'):  
@@ -202,6 +215,10 @@ class TradingClient:
                 self.get_active_symbols()
             else:
                 self.logger.error("❌ Authorization failed")
+            
+            # Call the custom callback if provided
+            if custom_callback:
+                custom_callback(data)
         
         req_id = self._send_request(request, auth_callback)
         return req_id is not None
@@ -375,6 +392,9 @@ class TradingClient:
             contracts = portfolio.get('contracts', [])
             self.portfolio_contracts = contracts
             self.logger.info(f"📦 Portfolio: {len(contracts)} open contracts")
+            
+            # Trigger portfolio callbacks
+            self.callback_manager.trigger_callbacks("portfolio", data)
     
     # 8. 💸 SELL CONTRACT
     def sell_contract(self, contract_id: int, price: float = 0, callback: Callable = None) -> int:
@@ -579,3 +599,28 @@ class TradingClient:
             'average_profit': round(total_profit / total_trades, 2) if total_trades > 0 else 0,
             'open_contracts': len(self.portfolio_contracts)
         }
+        
+    def add_portfolio_callback(self, callback: Callable) -> None:
+        """Add a callback for portfolio updates
+        
+        Args:
+            callback: Callback function to be called when portfolio is updated
+        """
+        self.callback_manager.add_callback("portfolio", callback)
+        self.logger.info("Added callback for portfolio updates")
+    
+    def remove_portfolio_callback(self, callback: Callable) -> bool:
+        """Remove a portfolio update callback
+        
+        Args:
+            callback: Callback function to be removed
+            
+        Returns:
+            bool: True if callback was successfully removed, False otherwise
+        """
+        result = self.callback_manager.remove_callback("portfolio", callback)
+        if result:
+            self.logger.info("Removed portfolio update callback")
+        else:
+            self.logger.warning("Failed to remove portfolio update callback")
+        return result
