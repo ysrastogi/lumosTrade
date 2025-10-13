@@ -89,13 +89,22 @@ class MarketSummarizer:
                     "max_output_tokens": 500,
                 },
             )
+
+            llm_summary = None
+            print(response)
+            if hasattr(response, "text") and response.text:
+                llm_summary = response.text
+            elif hasattr(response, "candidates"):
+                try:
+                    llm_summary = response.candidates[0].content.parts[0].text
+                except Exception:
+                    logger.warning("LLM response has no .text; falling back to structured content.")
+
+            print(llm_summary)
+            return llm_summary
+
             
-            llm_summary = response.text 
-            if llm_summary:
-                logger.info("Successfully generated LLM-based summary")
-                return llm_summary
-            else:
-                logger.warning("LLM returned empty response, falling back to template")
+
                 
         except Exception as e:
             logger.error(f"Error generating LLM summary: {e}", exc_info=True)
