@@ -12,9 +12,6 @@ market_data:
     - "R_50"  # Volatility 50 Index
     - "R_75"  # Volatility 75 Index
     - "R_100" # Volatility 100 Index
-    - "EURUSD"
-    - "GBPUSD"
-    - "USDJPY"
   
   stream_types:
     - "tick"
