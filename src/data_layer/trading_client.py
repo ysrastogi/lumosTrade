@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime, timedelta
 from enum import Enum
 import threading
-from .market_stream import MarketStream
+from src.data_layer.market_stream.stream import MarketStream
 from src.utils.callback_manager import CallbackManager
 
 class TradeType(Enum):
