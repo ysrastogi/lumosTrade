@@ -8,8 +8,8 @@ from config.settings import settings
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from fastapi.responses import JSONResponse
 
-from agents.athena_workspace.athena import AthenaAgent
-from agents.athena_workspace.models import (
+from src.agents.athena_workspace.athena import AthenaAgent
+from src.agents.athena_workspace.models import (
     MarketContext,
     MarketInsightsResponse,
     SymbolRequest,
