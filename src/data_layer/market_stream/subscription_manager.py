@@ -124,8 +124,12 @@ class SubscriptionManager:
         req_id = self.get_next_request_id()
         
         request = {
-            "ohlc": symbol,
+            "ticks_history": symbol,
+            "adjust_start_time": 1,
+            "count": 10,
+            "end": "latest",
             "granularity": granularity,
+            "style": "candles",
             "subscribe": 1,
             "req_id": req_id
         }
