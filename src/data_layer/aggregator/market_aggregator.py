@@ -1,11 +1,3 @@
-"""
-Market Stream Aggregator
-
-This module implements a real-time aggregator for market data streams.
-It normalizes raw market data, computes metrics, and maintains a cache of
-the latest market state for dashboard views.
-"""
-
 import logging
 import time
 from datetime import datetime, timedelta
@@ -16,7 +8,7 @@ import json
 import statistics
 from collections import deque, defaultdict
 
-from src.data_layer.market_stream import MarketStream
+from src.data_layer.market_stream.stream import MarketStream
 from src.data_layer.aggregator.worker import MarketAggregatorProcessor
 from src.data_layer.aggregator.models import (
     DirectionalBias,
@@ -67,8 +59,6 @@ class MarketDataAggregator:
     }
     
     def __init__(self, market_stream: Optional[MarketStream] = None):
-        """Initialize the aggregator with an optional market stream instance."""
-        # Use provided market stream or create a new one
         self.market_stream = market_stream or MarketStream()
         
         # Cache storage for aggregated data
@@ -84,50 +74,35 @@ class MarketDataAggregator:
             "1h": 3600
         }
         
-        # Historical data storage limits
         self._history_limits = {
             "ticks": 1000,  # Keep 1000 ticks per symbol
-            "1m": 60,     # Keep 1 hour of 1m data
-            "5m": 72,     # Keep 6 hours of 5m data
-            "15m": 96,    # Keep 24 hours of 15m data 
+            "1m": 120,    # Keep 2 hours of 1m data (increased from 60)
+            "5m": 120,    # Keep 10 hours of 5m data (increased from 72)
+            "15m": 120,   # Keep 30 hours of 15m data (increased from 96)
             "1h": 168,    # Keep 7 days of 1h data
+            "4h": 60,     # Keep 10 days of 4h data
+            "1d": 60      # Keep 60 days of daily data
         }
-        
-        # In-memory storage for historical snapshots
-        self._snapshots: List[MarketSnapshot] = []  # Store as plain list with explicit limit checks
-        
-        # Last generated AI commentary
+        self._snapshots: List[MarketSnapshot] = []
         self._last_commentary: Optional[AICommentaryData] = None
-        
-        # Worker processor for separate worker thread
         self._worker_processor: Optional[MarketAggregatorProcessor] = None
-        
-        # Last generated top setups 
         self._last_top_setups: List[TradingSetup] = []
-        
-        # Initialize the market data structure
         self._initialize_from_config()
-        
-        # Thread management
+
         self._running = False
         self._aggregation_thread: Optional[Thread] = None
         self._snapshot_thread: Optional[Thread] = None
-        
-        # Worker for market data processing
         self._worker_processor: Optional[MarketAggregatorProcessor] = None
     
     def start(self) -> bool:
-        """Start the aggregator and connect to market stream"""
         if self._running:
             logger.warning("Aggregator is already running")
             return True
             
-        # Connect to market stream
-        if not self.market_stream.is_connected and not self.market_stream.connect():
+        if  not self.market_stream.connect():
             logger.error("Failed to connect to market stream")
             return False
         
-        # Start the worker processor
         self._worker_processor = MarketAggregatorProcessor(
             self.market_stream,
             self._process_worker_data
@@ -136,19 +111,12 @@ class MarketDataAggregator:
         if not self._worker_processor.start():
             logger.error("Failed to start market aggregator worker")
             return False
-        
-        # Start background threads
+    
         self._running = True
-        
-        # Thread for continuous metric calculation
         self._aggregation_thread = Thread(target=self._run_aggregation_loop, daemon=True)
         self._aggregation_thread.start()
-        
-        # Thread for snapshot creation
         self._snapshot_thread = Thread(target=self._run_snapshot_loop, daemon=True)
         self._snapshot_thread.start()
-        
-        # Subscribe to market data for all symbols defined in the config
         self._subscribe_to_market_data()
         
         logger.info("Market data aggregator started successfully")
@@ -403,8 +371,31 @@ class MarketDataAggregator:
     
     def _process_ohlc(self, data: Dict[str, Any]):
         """Process incoming OHLC data from the market stream"""
+        # Check for both old and new format OHLC data
         ohlc_data = data.get('ohlc', {})
+        
+        # If no ohlc data directly, check if it's in the new format with candles from ticks_history
+        if not ohlc_data and data.get('candles') and data.get('echo_req', {}).get('ticks_history'):
+            # Extract from the most recent candle
+            candles = data.get('candles', [])
+            if candles:
+                latest_candle = candles[-1]
+                symbol = data.get('echo_req', {}).get('ticks_history')
+                granularity = data.get('echo_req', {}).get('granularity', 60)
+                
+                # Create synthetic OHLC data
+                ohlc_data = {
+                    'symbol': symbol,
+                    'open': latest_candle.get('open'),
+                    'high': latest_candle.get('high'),
+                    'low': latest_candle.get('low'),
+                    'close': latest_candle.get('close'),
+                    'epoch': latest_candle.get('epoch'),
+                    'granularity': granularity
+                }
+                
         if not ohlc_data:
+            logger.debug(f"No OHLC data found in message: {data.keys()}")
             return
             
         # Extract fields
@@ -414,14 +405,25 @@ class MarketDataAggregator:
         high = ohlc_data.get('high')
         low = ohlc_data.get('low')
         timestamp = ohlc_data.get('epoch')
+        granularity = ohlc_data.get('granularity', 60)
         
         if not all([symbol, close, timestamp]):
             logger.warning(f"Incomplete OHLC data: {ohlc_data}")
             return
             
-        # Extract volume if available
-        volume = ohlc_data.get('volume', 0)
+        # Extract volume if available and convert to float
+        volume = float(ohlc_data.get('volume', 0))
         
+        # Convert price data to float
+        try:
+            close = float(close)
+            open_price = float(open_price) if open_price is not None else None
+            high = float(high) if high is not None else None
+            low = float(low) if low is not None else None
+        except (ValueError, TypeError) as e:
+            logger.error(f"Error converting OHLC data to float: {e}")
+            return
+            
         # Create raw tick from OHLC close price
         raw_tick = RawMarketTick(
             symbol=symbol,
@@ -443,16 +445,77 @@ class MarketDataAggregator:
         with self._lock:
             norm_symbol = self._normalize_symbol(symbol).display
             if norm_symbol in self._historical_cache:
-                timeframe = ohlc_data.get('granularity', '1m')
+                # Convert granularity (seconds) to timeframe string
+                if isinstance(granularity, (int, float)):
+                    granularity_map = {
+                        60: "1m",
+                        300: "5m",
+                        900: "15m",
+                        3600: "1h",
+                        14400: "4h",
+                        86400: "1d"
+                    }
+                    # Get string representation
+                    timeframe = granularity_map.get(int(granularity), "1m")
+                    # Also keep the numeric representation
+                    granularity_str = str(int(granularity))
+                else:
+                    timeframe = "1m"  # Default if granularity is not valid
+                    granularity_str = "60"  # Default 60 seconds
+                
+                # Create OHLC data object with complete information
+                ohlc_data = {
+                    'symbol': symbol,
+                    'timestamp': timestamp,
+                    'epoch': timestamp,
+                    'open': open_price,
+                    'high': high,
+                    'low': low,
+                    'close': close,
+                    'volume': volume,
+                    'granularity': timeframe
+                }
+                
+                # Store in both the timeframe and granularity caches if they exist
+                stored = False
+                
+                # Try to store in the timeframe-named cache (e.g., "1m")
                 if timeframe in self._historical_cache[norm_symbol]:
-                    self._historical_cache[norm_symbol][timeframe].append({
-                        'timestamp': timestamp,
-                        'open': open_price,
-                        'high': high,
-                        'low': low,
-                        'close': close,
-                        'volume': volume
-                    })
+                    before_count = len(self._historical_cache[norm_symbol][timeframe])
+                    self._historical_cache[norm_symbol][timeframe].append(ohlc_data)
+                    after_count = len(self._historical_cache[norm_symbol][timeframe])
+                    
+                    if after_count > before_count:
+                        logger.info(f"✅ OHLC stored for {symbol} [{timeframe}]. Cache count: {after_count}")
+                        stored = True
+                    else:
+                        logger.warning(f"⚠️ OHLC not stored in {timeframe} cache for {symbol}")
+                
+                # Also try to store in the granularity-named cache (e.g., "60")
+                if granularity_str in self._historical_cache[norm_symbol]:
+                    before_count = len(self._historical_cache[norm_symbol][granularity_str])
+                    self._historical_cache[norm_symbol][granularity_str].append(ohlc_data)
+                    after_count = len(self._historical_cache[norm_symbol][granularity_str])
+                    
+                    if after_count > before_count:
+                        logger.info(f"✅ OHLC stored for {symbol} [{granularity_str}]. Cache count: {after_count}")
+                        stored = True
+                    else:
+                        logger.warning(f"⚠️ OHLC not stored in {granularity_str} cache for {symbol}")
+                
+                # Always add a copy to 1m cache to ensure we have enough data for analysis
+                # This is to address the "minimum 20 bars required" error
+                if "1m" in self._historical_cache[norm_symbol] and timeframe != "1m":
+                    # Only add if we don't have at least 20 entries yet
+                    if len(self._historical_cache[norm_symbol]["1m"]) < 25:
+                        one_min_data = ohlc_data.copy()
+                        one_min_data['granularity'] = "1m"
+                        self._historical_cache[norm_symbol]["1m"].append(one_min_data)
+                        logger.info(f"✅ OHLC also stored in 1m cache for {symbol}. Cache count: {len(self._historical_cache[norm_symbol]['1m'])}")
+                        stored = True
+                
+                if not stored:
+                    logger.warning(f"⚠️ OHLC received but not stored for {symbol}. No matching cache found.")
     
     def _handle_market_tick(self, raw_tick: RawMarketTick):
         """Process a normalized market tick"""
@@ -571,12 +634,19 @@ class MarketDataAggregator:
         """Initialize history for a new symbol"""
         self._historical_cache[symbol] = {
             "ticks": deque(maxlen=self._history_limits.get("ticks", 1000)),
-            "1m": deque(maxlen=self._history_limits.get("1m", 60)),
-            "5m": deque(maxlen=self._history_limits.get("5m", 72)),
-            "15m": deque(maxlen=self._history_limits.get("15m", 96)),
+            "1m": deque(maxlen=self._history_limits.get("1m", 120)),
+            "5m": deque(maxlen=self._history_limits.get("5m", 120)),
+            "15m": deque(maxlen=self._history_limits.get("15m", 120)),
             "1h": deque(maxlen=self._history_limits.get("1h", 168)),
-            "4h": deque(maxlen=self._history_limits.get("4h", 42)),
-            "1d": deque(maxlen=self._history_limits.get("1d", 30))
+            "4h": deque(maxlen=self._history_limits.get("4h", 60)),
+            "1d": deque(maxlen=self._history_limits.get("1d", 60)),
+            # Also add some aliases used in the code
+            "60": deque(maxlen=self._history_limits.get("1m", 120)),    # 1 minute
+            "300": deque(maxlen=self._history_limits.get("5m", 120)),   # 5 minutes
+            "900": deque(maxlen=self._history_limits.get("15m", 120)),  # 15 minutes
+            "3600": deque(maxlen=self._history_limits.get("1h", 168)),  # 1 hour
+            "14400": deque(maxlen=self._history_limits.get("4h", 60)),  # 4 hours
+            "86400": deque(maxlen=self._history_limits.get("1d", 60))   # 1 day
         }
         logger.info(f"Initialized history cache for symbol: {symbol}")
         
@@ -837,17 +907,17 @@ class MarketDataAggregator:
             # Sort by 15-min price change for gainers/losers
             sorted_by_change = sorted(symbols_list, key=lambda x: x.price_change_15m, reverse=True)
             
-            # Top 5 gainers
-            snapshot.top_gainers = sorted_by_change[:5]
+            # Top 5 gainers - get just the symbol names
+            snapshot.top_gainers = [s.symbol.display for s in sorted_by_change[:5]]
             
-            # Top 5 losers
-            snapshot.top_losers = sorted_by_change[-5:] if len(sorted_by_change) >= 5 else []
+            # Top 5 losers - get just the symbol names
+            snapshot.top_losers = [s.symbol.display for s in sorted_by_change[-5:]] if len(sorted_by_change) >= 5 else []
             
             # Sort by volatility
             sorted_by_volatility = sorted(symbols_list, key=lambda x: x.volatility, reverse=True)
             
-            # Top 5 high volatility
-            snapshot.high_volatility = sorted_by_volatility[:5]
+            # Top 5 high volatility - get just the symbol names
+            snapshot.high_volatility = [s.symbol.display for s in sorted_by_volatility[:5]]
             
             # Store the snapshot
             self._snapshots.append(snapshot)
