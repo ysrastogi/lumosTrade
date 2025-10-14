@@ -81,6 +81,7 @@ class MarketSnapshot(BaseModel):
     top_gainers: List[str] = Field([], description="Top gaining symbols")
     top_losers: List[str] = Field([], description="Top losing symbols")
     top_volume: List[str] = Field([], description="Top symbols by volume")
+    high_volatility: List[str] = Field([], description="Symbols with high volatility")
 
 
 class AICommentaryData(BaseModel):
