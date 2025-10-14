@@ -845,36 +845,63 @@ class AggregatorWorker:
             
     def _update_metrics_from_ohlc(self, symbol: str, interval: str, ohlc_data: Dict[str, Any]) -> None:
         try:
+            # Make sure we have valid data
+            if not ohlc_data:
+                logger.warning(f"Empty OHLC data for {symbol}")
+                return
+                
             metrics = self.cache.get_metrics(symbol)
             if not metrics:
                 metrics = SymbolMetrics(
                     symbol={"base": symbol, "quote": "USD", "original": symbol, "display": symbol, "asset_name": symbol},
-                    last_price=ohlc_data.get("close", 0.0),
+                    last_price=float(ohlc_data.get("close", 0.0)),
                     last_updated=datetime.now()
                 )
             
-            open_price = ohlc_data.get("open", 0.0)
-            close_price = ohlc_data.get("close", 0.0)
+            # Ensure we're working with float values, not strings
+            try:
+                open_price = float(ohlc_data.get("open", 0.0))
+                close_price = float(ohlc_data.get("close", 0.0))
+                high_price = float(ohlc_data.get("high", 0.0))
+                low_price = float(ohlc_data.get("low", 0.0))
+                volume = float(ohlc_data.get("volume", 0.0))
+            except (ValueError, TypeError) as e:
+                logger.error(f"Error converting OHLC values to float for {symbol}: {e}")
+                open_price = 0.0
+                close_price = 0.0
+                high_price = 0.0
+                low_price = 0.0
+                volume = 0.0
             
             if open_price > 0:
                 pct_change = ((close_price - open_price) / open_price) * 100
+                
+                # Map granularity to interval if needed
+                if isinstance(interval, (int, float)) or interval.isdigit():
+                    # Convert granularity to interval string
+                    granularity_map = {
+                        '60': "1m",
+                        '300': "5m",
+                        '900': "15m",
+                        '3600': "1h",
+                        '14400': "4h",
+                        '86400': "1d"
+                    }
+                    interval = granularity_map.get(str(interval), "1m")
+                
+                # Update metrics based on interval
                 if interval == "1m":
                     metrics.price_change_1m = pct_change
+                    metrics.volume_1m = volume
                 elif interval == "5m":
                     metrics.price_change_5m = pct_change
+                    metrics.volume_5m = volume
                 elif interval == "15m":
                     metrics.price_change_15m = pct_change
+                    metrics.volume_15m = volume
                 elif interval == "1h":
                     metrics.price_change_1h = pct_change
                 
-                volume = ohlc_data.get("volume", 0.0)
-                if interval == "1m":
-                    metrics.volume_1m = volume
-                elif interval == "5m":
-                    metrics.volume_5m = volume
-                elif interval == "15m":
-                    metrics.volume_15m = volume
-                    
                 # Simple directional bias based on price changes
                 if metrics.price_change_1h > 0.5:
                     metrics.directional_bias = DirectionalBias.BULL
@@ -885,8 +912,8 @@ class AggregatorWorker:
                     
                 # Update volatility (simple high-low range as percentage of open)
                 if open_price > 0:
-                    high = ohlc_data.get("high", open_price)
-                    low = ohlc_data.get("low", open_price)
+                    high = float(ohlc_data.get("high", open_price))
+                    low = float(ohlc_data.get("low", open_price))
                     metrics.volatility = ((high - low) / open_price) * 100
             
             # Save updated metrics to cache
