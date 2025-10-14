@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 root_dir = Path(__file__).resolve().parent
 sys.path.append(str(root_dir))
 
-from settings import settings
+from config.settings import settings
 from src.api.athena_api import athena_router
 from src.api.dashboard_router import dashboard_router
 from src.api.ws_router import ws_router
