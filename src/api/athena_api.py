@@ -3,13 +3,13 @@ import os
 import logging
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
-from settings import settings
+from config.settings import settings
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from fastapi.responses import JSONResponse
 
-from src.agents.athena import AthenaAgent
-from src.agents.models import (
+from agents.athena_workspace.athena import AthenaAgent
+from agents.athena_workspace.models import (
     MarketContext,
     MarketInsightsResponse,
     SymbolRequest,
@@ -67,26 +67,8 @@ async def analyze_symbol(request: SymbolRequest):
 async def analyze_multiple_symbols(request: MultiSymbolRequest):
     """Analyze multiple symbols with Athena"""
     try:
-        if API_ONLY_MODE:
-            # In API-only mode, respond with a message that analysis is handled by worker
-            logger.info(f"Multi-symbol analysis request received in API-only mode")
-            return [
-                {
-                    "symbol": symbol,
-                    "timestamp": datetime.now().isoformat(),
-                    "message": "Analysis request received. Processing by worker.",
-                    "status": "queued"
-                }
-                for symbol in request.symbols
-            ]
-        
-        # Normal mode - get or create Athena agent
         agent = get_athena_agent()
-        
-        # Always initialize the agent to ensure connections are ready
         await agent.initialize()
-            
-        # Analyze the requested symbols
         contexts = await agent.observe_multiple(
             symbols=request.symbols,
             interval=request.interval
@@ -101,27 +83,11 @@ async def analyze_multiple_symbols(request: MultiSymbolRequest):
 
 @athena_router.get("/insights", response_model=MarketInsightsResponse)
 async def get_market_insights(top_n: int = Query(3, ge=1, le=10)):
-    """Get consolidated market insights from Athena"""
     try:
-        if API_ONLY_MODE:
-            # In API-only mode, respond with a message that insights are handled by worker
-            logger.info(f"Market insights request received in API-only mode")
-            return {
-                "timestamp": datetime.now().isoformat(),
-                "message": "Market insights request received. Processing by worker.",
-                "status": "queued"
-            }
-        
-        # Normal mode - get or create Athena agent
         agent = get_athena_agent()
-        
-        # Check if we have any insights available
         if not agent.context_history:
-            # Need to fetch some data first - analyze a default set of symbols
             default_symbols = ["R_100", "R_50", "BOOM1000", "CRASH1000"]
             await agent.observe_multiple(symbols=default_symbols)
-            
-        # Get insights
         insights = agent.get_current_insights(top_n=top_n)
         return insights
     
