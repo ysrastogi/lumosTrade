@@ -12,9 +12,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from config.settings import settings
 from src.agents.athena_workspace.tools.regime_detection import RegimeDetector
-from google import genai
-from config.settings import settings
-from src.llm import client
+from src.llm.client import gemini
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +21,13 @@ class MarketSummarizer:
     def __init__(self, use_llm: bool = True, api_key: Optional[str] = None):
 
         self.use_llm = use_llm
-        self.llm_client = genai.Client(api_key=settings.gemini_api_key)
+        self.llm_client = gemini
         logger.info("LLM client initialized successfully")
 
 
     def generate_llm_summary(self, symbol: str, features: Dict, regime: str, patterns: List[Dict],
                              time_horizon: str = "short-term") -> str:
             
-
         regime_description = RegimeDetector.get_regime_description(regime)
         
         # Extract the most relevant features
@@ -77,37 +74,24 @@ class MarketSummarizer:
         """
 
         try:
-                
-            # Call the LLM API with safety parameters
-            response = self.llm_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config={
-                    "temperature": 0.7,
-                    "top_p": 0.95,
-                    "top_k": 40,
-                    "max_output_tokens": 500,
-                },
+            print("Generating LLM summary with prompt:")
+            print(prompt)
+            # Use our new client with additional generation parameters
+            llm_summary = self.llm_client.generate(
+                prompt=prompt,
+                temperature=0.7,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=2000
             )
-
-            llm_summary = None
-            print(response)
-            if hasattr(response, "text") and response.text:
-                llm_summary = response.text
-            elif hasattr(response, "candidates"):
-                try:
-                    llm_summary = response.candidates[0].content.parts[0].text
-                except Exception:
-                    logger.warning("LLM response has no .text; falling back to structured content.")
-
+            
+            # Log and return the summary
             print(llm_summary)
             return llm_summary
-
-            
-
                 
         except Exception as e:
             logger.error(f"Error generating LLM summary: {e}", exc_info=True)
+            return None
 
         
     def generate_trade_ideas(self, symbol: str, features: Dict, patterns: List[Dict], 
