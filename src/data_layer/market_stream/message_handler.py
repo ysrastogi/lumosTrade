@@ -73,7 +73,12 @@ class MessageHandler:
         elif msg_type == 'tick':
             self._handle_tick_data(data)
         elif msg_type == 'candles':
-            self._handle_candle_data(data)
+            # Check if this is an OHLC subscription (from ticks_history with style=candles)
+            if data.get('echo_req', {}).get('subscribe') == 1 and data.get('echo_req', {}).get('style') == 'candles':
+                self._handle_ohlc_data(data)
+            else:
+                # Regular candles handling
+                self._handle_candle_data(data)
         elif msg_type == 'ohlc':
             self._handle_ohlc_data(data)
         elif msg_type == 'ping':
@@ -212,8 +217,10 @@ class MessageHandler:
         Args:
             data: OHLC data
         """
-        ohlc = data.get('ohlc', {})
-        if ohlc:
+        # Check for both old format (ohlc) and new format (candles from ticks_history)
+        if data.get('ohlc'):
+            # Old format handling
+            ohlc = data.get('ohlc', {})
             symbol = ohlc.get('symbol')
             open_price = ohlc.get('open')
             high_price = ohlc.get('high')
@@ -236,6 +243,58 @@ class MessageHandler:
             # Convert to strongly typed data model
             ohlc_data = OHLCData.from_dict(data)
             self.callback_manager.trigger_callbacks("ohlc_structured", ohlc_data)
+            
+        elif data.get('candles') and data.get('echo_req', {}).get('ticks_history'):
+            # New format handling (from ticks_history with style=candles)
+            candles = data.get('candles', [])
+            if not candles:
+                return
+                
+            # Get symbol from echo_req
+            symbol = data.get('echo_req', {}).get('ticks_history')
+            granularity = data.get('echo_req', {}).get('granularity', 60)
+            interval = GRANULARITY_MAP.get(granularity, "1m")
+            
+            # Handle the most recent candle as OHLC data
+            latest_candle = candles[-1] if candles else None
+            if latest_candle:
+                open_price = latest_candle.get('open')
+                high_price = latest_candle.get('high')
+                low_price = latest_candle.get('low')
+                close_price = latest_candle.get('close')
+                timestamp = latest_candle.get('epoch')
+                
+                self.logger.info(f"OHLC from history - {symbol}: O:{open_price} H:{high_price} L:{low_price} C:{close_price} at {datetime.fromtimestamp(timestamp)}")
+                
+                # Create synthetic OHLC format to maintain compatibility
+                synthetic_ohlc_data = {
+                    'ohlc': {
+                        'symbol': symbol,
+                        'open': open_price,
+                        'high': high_price,
+                        'low': low_price,
+                        'close': close_price,
+                        'epoch': timestamp
+                    },
+                    'granularity': granularity
+                }
+                
+                # Call any registered callbacks for this symbol
+                callback_key = f"ohlc_{symbol}_{interval}"
+                callback = self.subscription_manager.get_callback(callback_key)
+                if callback:
+                    # Pass both the original data and the synthetic format
+                    callback(data)
+                
+                # Trigger callbacks registered via the callback manager
+                self.callback_manager.trigger_callbacks("ohlc", synthetic_ohlc_data)
+                
+                # Convert to strongly typed data model and trigger structured callbacks
+                ohlc_data = OHLCData.from_dict(synthetic_ohlc_data)
+                self.callback_manager.trigger_callbacks("ohlc_structured", ohlc_data)
+                
+                # Also trigger candles callback for full history
+                self.callback_manager.trigger_callbacks("candles", data)
     
     def _handle_contract_update(self, data: Dict[str, Any]) -> None:
         """Handle contract update from subscription
