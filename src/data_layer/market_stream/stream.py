@@ -3,7 +3,7 @@ import yaml
 from typing import Dict, List, Optional, Callable, Any
 from dotenv import load_dotenv
 
-from settings import settings
+from config.settings import settings
 from src.utils.callback_manager import CallbackManager
 from src.data_layer.market_stream.models import MarketConfig
 from src.data_layer.market_stream.connection_manager import ConnectionManager
