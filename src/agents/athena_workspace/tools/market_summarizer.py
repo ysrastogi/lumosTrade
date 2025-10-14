@@ -11,7 +11,7 @@ import os
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from config.settings import settings
-from src.agents.market_analysis.regime_detection import RegimeDetector
+from src.agents.athena_workspace.tools.regime_detection import RegimeDetector
 from google import genai
 from config.settings import settings
 from src.llm import client
