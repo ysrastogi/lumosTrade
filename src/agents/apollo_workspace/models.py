@@ -27,6 +27,8 @@ class Signal:
     direction: str
     confidence: float
     entry: float
+    time_horizon: str
+    description: str
     stop_loss: float
     target: float
     risk_reward: float
