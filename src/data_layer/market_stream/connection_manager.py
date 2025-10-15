@@ -94,11 +94,39 @@ class ConnectionManager:
     def _on_open(self, ws):
         self.logger.info("WebSocket connection opened")
         self.is_connected = True
+    
+        if self.auth_token:
+            self._authenticate()
+        else:
+            ping_request = {
+                "ping": 1
+            }
+            self.send_message(ping_request)
+        
         self._start_heartbeat()
     
     def _on_message(self, ws, message):
         try:
+            # Log the raw message for debugging
+            self.logger.debug(f"Raw message received: {message}")
+            
             data = json.loads(message)
+            
+            # Check for error responses
+            if "error" in data:
+                self.logger.error(f"API Error [{data['error'].get('code', 'Unknown')}]: {data['error'].get('message', 'Unknown error')}")
+            
+            # Handle ping-pong for keepalive
+            if data.get("msg_type") == "ping":
+                self.logger.debug("Received ping response - connection is alive")
+                # No need to respond as this is a response to our ping
+                
+            # Check for authorization response
+            if data.get("msg_type") == "authorize":
+                self.logger.info("Authorization successful")
+                self.is_authenticated = True
+            
+            # Process all messages through the handler
             self.message_handler(data)
         except json.JSONDecodeError as e:
             self.logger.error(f"Error parsing WebSocket message: {e}")
@@ -120,7 +148,11 @@ class ConnectionManager:
         def heartbeat():
             while self.running and self.is_connected:
                 try:
-                    ping_request = {"ping": 1}
+                    # Deriv API ping format
+                    ping_request = {
+                        "ping": 1
+                    }
+                    self.logger.debug("Sending heartbeat ping")
                     self.send_message(ping_request)
                     time.sleep(self.heartbeat_interval)
                 except Exception as e:
@@ -156,10 +188,9 @@ class ConnectionManager:
             self.logger.warning("No auth token provided, skipping authentication")
             return
         self.logger.info(f"Authenticating with Deriv API using token: {self.auth_token[:5]}...")
-        req_id = self.get_next_request_id()
+        
         auth_request = {
-            "authorize": self.auth_token,
-            "req_id": req_id
+            "authorize": self.auth_token
         }
         
         self.send_message(auth_request)
