@@ -17,6 +17,25 @@ from src.agents.dedalus_workspace.models import (
     SimulationStatus
 )
 
+from src.agents.dedalus_workspace.prompts import (
+    SYSTEM_PROMPT,
+    INTENT_CLASSIFICATION_PROMPT, 
+    INTENT_KEYWORDS,
+    VALID_INTENTS,
+    STRATEGY_EXTRACTION_PROMPT,
+    DEFAULT_STRATEGY,
+    EXPLANATION_PROMPT,
+    NEXT_ACTIONS_PROMPT,
+    STRATEGY_IDEAS_PROMPT,
+    MARKET_PARAMS_PROMPT,
+    FORECAST_PARAMS_PROMPT
+)
+from src.agents.dedalus_workspace.prompts.base import (
+    format_prompt, 
+    TEMPERATURE_PRESETS,
+    TOKEN_LIMITS
+)
+
 from src.agents.dedalus_workspace.tools.monte_carlo_engine import MonteCarloEngine
 from src.agents.dedalus_workspace.tools.strategy_evolver import MLStrategyEvolver
 from src.agents.dedalus_workspace.tools.parameter_optimizer import ParameterOptimizer
@@ -289,36 +308,8 @@ class DaedalusLLM:
         self.client = gemini  # Use the pre-initialized GeminiClient
         self.conversation_history: List[Dict] = []
         
-        # System prompt
-        self.system_prompt = """You are DAEDALUS, "The Architect of Possibilities" - an advanced trading strategy simulation agent powered by Google's Gemini 2.5.
-
-Your enhanced capabilities:
-1. Strategy Creation: Design and configure trading strategies with specific parameters
-2. Simulation: Run backtests on historical data
-3. Optimization: Find optimal parameters using grid search, random search, or genetic algorithms
-4. Analysis: Perform walk-forward analysis, stress testing, and Monte Carlo forecasting
-5. Portfolio Management: Optimize allocation across multiple strategies
-6. AI-Powered Strategy Ideas: Generate innovative trading strategies based on market conditions
-7. Intelligent Explanations: Provide insightful analysis of simulation results
-
-When users ask you to:
-- CREATE/DESIGN a strategy → Parse requirements and create StrategyConfig
-- TEST/SIMULATE → Run backtest simulation
-- OPTIMIZE → Use parameter optimization
-- ANALYZE → Perform walk-forward or stress testing
-- FORECAST → Run Monte Carlo simulations
-- COMPARE → Batch simulate multiple strategies
-- GENERATE IDEAS → Create innovative trading strategies with Gemini AI
-- EXPLAIN/ANALYZE RESULTS → Provide AI-enhanced insights and recommendations
-
-Always provide:
-- Clear metrics (Sharpe ratio, return, max drawdown)
-- Risk-adjusted performance
-- Actionable insights powered by Gemini
-- Parameter recommendations
-- Next steps and suggestions
-
-Response format: Provide structured JSON for tool calls, conversational explanations for results."""
+        # System prompt - loaded from the prompts module
+        self.system_prompt = SYSTEM_PROMPT
     
     def process_query(self, user_query: str, data: Optional[Any] = None) -> Dict[str, Any]:
         """
@@ -380,24 +371,12 @@ Response format: Provide structured JSON for tool calls, conversational explanat
             elif intent == "generate_ideas":
                 # Extract parameters from query using Gemini
                 try:
-                    prompt = f"""
-                    Extract market analysis parameters from this query about trading strategies.
-                    Return a JSON object with these fields:
-                    {{
-                      "market_conditions": "Brief description of market conditions mentioned",
-                      "asset_class": "Asset class mentioned (equities, forex, crypto, commodities, etc.)",
-                      "risk_appetite": "Risk level mentioned (low, medium, high)"
-                    }}
-                    
-                    Query: "{user_query}"
-                    
-                    Use reasonable defaults for any missing fields.
-                    """
+                    prompt = format_prompt(MARKET_PARAMS_PROMPT, query=user_query)
                     
                     response_text = self.client.generate(
                         prompt=prompt,
-                        temperature=0.3,
-                        max_output_tokens=200
+                        temperature=TEMPERATURE_PRESETS["extraction"],
+                        max_output_tokens=TOKEN_LIMITS["extraction"]
                     )
                     
                     import json
@@ -437,42 +416,29 @@ Response format: Provide structured JSON for tool calls, conversational explanat
             # Use Gemini to generate a more detailed explanation if we have results
             if results and not response["explanation"]:
                 try:
-                    prompt = f"""
-                    Generate a clear, concise explanation of the following trading strategy results.
-                    Use a professional, informative tone. Include key metrics and insights where available.
-                    
-                    User query: {user_query}
-                    
-                    Intent: {intent}
-                    
-                    Results: {str(results)}
-                    
-                    Provide a 2-3 sentence explanation with the most important information.
-                    """
+                    prompt = format_prompt(EXPLANATION_PROMPT, 
+                                           query=user_query,
+                                           intent=intent,
+                                           results=str(results))
                     
                     gemini_explanation = self.client.generate(
                         prompt=prompt,
-                        temperature=0.3,
-                        max_output_tokens=200
+                        temperature=TEMPERATURE_PRESETS["explanation"],
+                        max_output_tokens=TOKEN_LIMITS["explanation"]
                     )
                     
                     response["explanation"] = gemini_explanation.strip()
                     
                     # Also suggest next actions using Gemini
-                    next_actions_prompt = f"""
-                    Based on the trading strategy results below, suggest 2-3 logical next steps the user might want to take.
-                    Return only a JSON array of strings, each representing a next action.
-                    Example: ["Optimize the strategy parameters", "Run a Monte Carlo simulation", "Compare with benchmark"]
-                    
-                    User query: {user_query}
-                    Intent: {intent}
-                    Results: {str(results)}
-                    """
+                    next_actions_prompt = format_prompt(NEXT_ACTIONS_PROMPT,
+                                                        query=user_query,
+                                                        intent=intent,
+                                                        results=str(results))
                     
                     next_actions = self.client.generate(
                         prompt=next_actions_prompt,
                         temperature=0.4,
-                        max_output_tokens=100
+                        max_output_tokens=TOKEN_LIMITS["explanation"]
                     )
                     
                     # Try to parse as JSON array
@@ -506,49 +472,23 @@ Response format: Provide structured JSON for tool calls, conversational explanat
         """Classify user intent from query using Gemini"""
         query_lower = query.lower()
         
-        # First try rule-based approach
-        intents = {
-            "create_strategy": ["create", "design", "build", "new strategy", "configure"],
-            "simulate": ["simulate", "backtest", "test", "run", "execute"],
-            "optimize": ["optimize", "tune", "find best", "parameter search", "improve"],
-            "analyze": ["analyze", "walk forward", "stress test", "validate", "robust"],
-            "forecast": ["forecast", "predict", "monte carlo", "future", "project"],
-            "compare": ["compare", "versus", "vs", "which is better", "rank"],
-            "status": ["status", "report", "state", "summary", "what have", "show me"],
-            "generate_ideas": ["ideas", "suggest", "recommend", "brainstorm", "generate strategy"]
-        }
-        
-        for intent, keywords in intents.items():
+        # First try rule-based approach using imported keywords
+        for intent, keywords in INTENT_KEYWORDS.items():
             if any(kw in query_lower for kw in keywords):
                 return intent
         
         # If rule-based approach fails, use Gemini for more advanced intent detection
-        prompt = f"""
-        Analyze the following query and classify the intent into one of these categories:
-        - create_strategy: Creating or designing a new trading strategy
-        - simulate: Running a backtest or simulation
-        - optimize: Finding optimal parameters for a strategy
-        - analyze: Performing analysis like walk-forward or stress testing
-        - forecast: Generating Monte Carlo forecasts or predictions
-        - compare: Comparing different strategies or approaches
-        - status: Requesting status reports or summaries
-        - unknown: If none of the above apply
-        
-        Query: "{query}"
-        
-        Return only the category name, nothing else.
-        """
+        prompt = format_prompt(INTENT_CLASSIFICATION_PROMPT, query=query)
         
         try:
             response = self.client.generate(
                 prompt=prompt, 
-                temperature=0.1,
-                max_output_tokens=20
+                temperature=TEMPERATURE_PRESETS["classification"],
+                max_output_tokens=TOKEN_LIMITS["classification"]
             ).strip().lower()
             
             # Validate the response
-            valid_intents = list(intents.keys()) + ["unknown"]
-            if response in valid_intents:
+            if response in VALID_INTENTS:
                 return response
             else:
                 logger.warning(f"Gemini returned invalid intent: {response}")
@@ -560,34 +500,14 @@ Response format: Provide structured JSON for tool calls, conversational explanat
     def _handle_create_strategy(self, query: str) -> Dict:
         """Parse query and create strategy configuration using Gemini"""
         # Use Gemini to extract strategy parameters from the query
-        prompt = f"""
-        Extract trading strategy parameters from the following query. Return a JSON object with these fields:
-        
-        {{
-          "name": "Strategy name (use a descriptive name)",
-          "strategy_type": "One of: momentum, mean_reversion, trend_following, breakout, statistical_arbitrage, options_strategy",
-          "parameters": {{Extracted parameters as key-value pairs}},
-          "entry_rules": ["List of entry rules as strings"],
-          "exit_rules": ["List of exit rules as strings"],
-          "risk_params": {{
-            "position_size": float (0-1),
-            "stop_loss": float (0-1), 
-            "take_profit": float (0-1)
-          }}
-        }}
-        
-        Query: "{query}"
-        
-        Parse as much as you can from the query. For any missing values, use sensible defaults.
-        For parameters, extract any numerical values mentioned (like periods, thresholds).
-        """
+        prompt = format_prompt(STRATEGY_EXTRACTION_PROMPT, query=query)
         
         try:
             # Get strategy parameters from Gemini
             response = self.client.generate(
                 prompt=prompt,
-                temperature=0.2,
-                max_output_tokens=1000
+                temperature=TEMPERATURE_PRESETS["extraction"],
+                max_output_tokens=TOKEN_LIMITS["extraction"]
             )
             
             # Try to parse the response as JSON
@@ -599,16 +519,12 @@ Response format: Provide structured JSON for tool calls, conversational explanat
                 # If parsing fails, fall back to simple extraction
                 logger.warning("Failed to parse Gemini response as JSON, using fallback extraction")
                 strategy_data = {
-                    "name": self._extract_strategy_name(query) or "Custom_Strategy",
-                    "strategy_type": self._extract_strategy_type(query) or "momentum",
-                    "parameters": self._extract_parameters(query) or {"period": 20},
-                    "entry_rules": ["condition_1"],
-                    "exit_rules": ["condition_2"],
-                    "risk_params": {
-                        "position_size": 0.1,
-                        "stop_loss": 0.02,
-                        "take_profit": 0.05
-                    }
+                    "name": self._extract_strategy_name(query) or DEFAULT_STRATEGY["name"],
+                    "strategy_type": self._extract_strategy_type(query) or DEFAULT_STRATEGY["strategy_type"],
+                    "parameters": self._extract_parameters(query) or DEFAULT_STRATEGY["parameters"],
+                    "entry_rules": DEFAULT_STRATEGY["entry_rules"],
+                    "exit_rules": DEFAULT_STRATEGY["exit_rules"],
+                    "risk_params": DEFAULT_STRATEGY["risk_params"]
                 }
                 
             strategy = StrategyConfig(
@@ -624,16 +540,12 @@ Response format: Provide structured JSON for tool calls, conversational explanat
             logger.error(f"Error using Gemini for strategy creation: {e}")
             # Fallback to default strategy
             strategy = StrategyConfig(
-                name="Custom_Strategy",
-                strategy_type="momentum",
-                parameters={"period": 20},
-                entry_rules=["condition_1"],
-                exit_rules=["condition_2"],
-                risk_params={
-                    "position_size": 0.1,
-                    "stop_loss": 0.02,
-                    "take_profit": 0.05
-                }
+                name=DEFAULT_STRATEGY["name"],
+                strategy_type=DEFAULT_STRATEGY["strategy_type"],
+                parameters=DEFAULT_STRATEGY["parameters"],
+                entry_rules=DEFAULT_STRATEGY["entry_rules"],
+                exit_rules=DEFAULT_STRATEGY["exit_rules"],
+                risk_params=DEFAULT_STRATEGY["risk_params"]
             )
         
         strategy_id = self.agent.memory.add_strategy(strategy)
@@ -822,23 +734,12 @@ Response format: Provide structured JSON for tool calls, conversational explanat
         
         # Extract forecast parameters from query using Gemini
         try:
-            prompt = f"""
-            Extract Monte Carlo simulation parameters from the query.
-            Return a JSON object with these fields:
-            {{
-              "n_days": (int, number of days to forecast, default 252),
-              "n_paths": (int, number of simulation paths, default 10000)
-            }}
-            
-            Query: "{query}"
-            
-            Extract what you can, use defaults for missing values.
-            """
+            prompt = format_prompt(FORECAST_PARAMS_PROMPT, query=query)
             
             response = self.client.generate(
                 prompt=prompt,
-                temperature=0.1,
-                max_output_tokens=100
+                temperature=TEMPERATURE_PRESETS["extraction"],
+                max_output_tokens=TOKEN_LIMITS["extraction"]
             )
             
             import json
@@ -927,43 +828,16 @@ Response format: Provide structured JSON for tool calls, conversational explanat
         Returns:
             List of strategy ideas with parameters
         """
-        prompt = f"""
-        Generate 3 trading strategy ideas based on the following:
-        
-        Market Conditions: {market_conditions}
-        Asset Class: {asset_class}
-        Risk Appetite: {risk_appetite}
-        
-        For each strategy, provide:
-        1. Name
-        2. Strategy Type (momentum, mean_reversion, trend_following, breakout, etc.)
-        3. Key Parameters
-        4. Entry Rules
-        5. Exit Rules
-        6. Risk Management Parameters
-        7. Expected Performance
-        
-        Format as a JSON array of strategy objects, like this:
-        [
-          {{
-            "name": "Strategy Name",
-            "type": "Strategy Type",
-            "description": "Brief explanation",
-            "parameters": {{"param1": value1, "param2": value2}},
-            "entry_rules": ["rule1", "rule2"],
-            "exit_rules": ["rule1", "rule2"],
-            "risk_params": {{"position_size": 0.1, "stop_loss": 0.02, "take_profit": 0.05}},
-            "expected_performance": {{"sharpe": 1.5, "annual_return": 0.18, "max_drawdown": -0.15}}
-          }},
-          ...
-        ]
-        """
+        prompt = format_prompt(STRATEGY_IDEAS_PROMPT, 
+                               market_conditions=market_conditions,
+                               asset_class=asset_class,
+                               risk_appetite=risk_appetite)
         
         try:
             response = self.client.generate(
                 prompt=prompt,
-                temperature=0.7,  # Higher temperature for creative ideas
-                max_output_tokens=2000
+                temperature=TEMPERATURE_PRESETS["creative"],
+                max_output_tokens=TOKEN_LIMITS["strategy_ideas"]
             )
             
             import json
