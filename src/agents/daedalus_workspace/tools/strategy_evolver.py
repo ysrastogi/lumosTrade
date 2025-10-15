@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from enum import Enum
 import logging
 
-from src.agents.dedalus_workspace.models import StrategyConfig, SimulationResult
+from src.agents.daedalus_workspace.models import StrategyConfig, SimulationResult
 
 
 logging.basicConfig(level=logging.INFO)

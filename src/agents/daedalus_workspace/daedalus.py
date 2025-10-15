@@ -10,14 +10,14 @@ import pandas as pd
 import logging
 
 from src.llm.client import GeminiClient, gemini
-from src.agents.dedalus_workspace.models import (
+from src.agents.daedalus_workspace.models import (
     StrategyConfig,
     SimulationResult,
     OptimizationTask,
     SimulationStatus
 )
 
-from src.agents.dedalus_workspace.prompts import (
+from src.agents.daedalus_workspace.prompts import (
     SYSTEM_PROMPT,
     INTENT_CLASSIFICATION_PROMPT, 
     INTENT_KEYWORDS,
@@ -30,20 +30,20 @@ from src.agents.dedalus_workspace.prompts import (
     MARKET_PARAMS_PROMPT,
     FORECAST_PARAMS_PROMPT
 )
-from src.agents.dedalus_workspace.prompts.base import (
+from src.agents.daedalus_workspace.prompts.base import (
     format_prompt, 
     TEMPERATURE_PRESETS,
     TOKEN_LIMITS
 )
 
-from src.agents.dedalus_workspace.tools.monte_carlo_engine import MonteCarloEngine
-from src.agents.dedalus_workspace.tools.strategy_evolver import MLStrategyEvolver
-from src.agents.dedalus_workspace.tools.parameter_optimizer import ParameterOptimizer
-from src.agents.dedalus_workspace.tools.walk_forward_analyzer import WalkForwardAnalyzer
-from src.agents.dedalus_workspace.tools.portfolio_rebalancer import PortfolioRebalancer
-from src.agents.dedalus_workspace.tools.scenario_generator import ScenarioGenerator
-from src.agents.dedalus_workspace.tools.execution_simulator import ExecutionSimulator
-from src.agents.dedalus_workspace.memory_manager import DaedalusMemory
+from src.agents.daedalus_workspace.tools.monte_carlo_engine import MonteCarloEngine
+from src.agents.daedalus_workspace.tools.strategy_evolver import MLStrategyEvolver
+from src.agents.daedalus_workspace.tools.parameter_optimizer import ParameterOptimizer
+from src.agents.daedalus_workspace.tools.walk_forward_analyzer import WalkForwardAnalyzer
+from src.agents.daedalus_workspace.tools.portfolio_rebalancer import PortfolioRebalancer
+from src.agents.daedalus_workspace.tools.scenario_generator import ScenarioGenerator
+from src.agents.daedalus_workspace.tools.execution_simulator import ExecutionSimulator
+from src.agents.daedalus_workspace.memory_manager import DaedalusMemory
 
 logger = logging.getLogger(__name__)
 
