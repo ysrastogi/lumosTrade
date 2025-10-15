@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import List
+from src.agents.apollo_workspace.models import Signal
 
 class SignalGenerator:
     """
