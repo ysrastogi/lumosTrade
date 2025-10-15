@@ -182,10 +182,14 @@ class MarketStream:
     def is_ready(self) -> bool:
         return self.connection_manager.is_ready()
     
+    @property
+    def is_connected(self):
+        """
+        Compatibility patch for MarketStream integration
+        """
+        return self.is_ready()
 
     
-
-        
     def _subscribe_to_configured_symbols(self):
         try:
             self.logger.info("Subscribing to configured symbols")
