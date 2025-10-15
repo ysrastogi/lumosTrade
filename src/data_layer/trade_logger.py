@@ -18,7 +18,7 @@ class TradeLogger:
         
         # Configuration
         self.config = config or {}
-        self.max_log_files = self.config.get('max_log_files', 30)
+        self.log_retention_days = self.config.get('log_retention_days', 31)  # Default to keep 1 month of logs
         self.log_level = self.config.get('log_level', 'INFO')
         
         # Set up logging
@@ -295,14 +295,18 @@ class TradeLogger:
             'session_date': datetime.now().strftime('%Y-%m-%d'),
             'session_start': self.session_stats['session_start'].isoformat(),
             'session_end': datetime.now().isoformat(),
-            'performance': self.get_session_performance()
+            'performance': self.get_session_performance(),
+            'retention_info': {
+                'retention_days': self.log_retention_days,
+                'expiry_date': (datetime.now() + timedelta(days=self.log_retention_days)).strftime('%Y-%m-%d')
+            }
         }
         
         try:
             with open(self.performance_json_file, 'w') as f:
                 json.dump(performance_data, f, indent=2)
             
-            self.logger.info(f"Session performance saved to {self.performance_json_file}")
+            self.logger.info(f"Session performance saved to {self.performance_json_file} (will be retained for {self.log_retention_days} days)")
             
         except Exception as e:
             self.logger.error(f"Failed to save session performance: {e}")
@@ -310,6 +314,9 @@ class TradeLogger:
     def generate_daily_report(self) -> str:
         """Generate daily trading report"""
         performance = self.get_session_performance()
+        
+        # Get retention status
+        retention_status = self.get_log_retention_status()
         
         report = f"""
 📊 DAILY TRADING REPORT - {datetime.now().strftime('%Y-%m-%d')}
@@ -341,8 +348,15 @@ Current Loss Streak: {performance['current_consecutive_losses']}
 Symbols Traded: {', '.join(performance['symbols_traded']) if performance['symbols_traded'] else 'None'}
 Trade Types Used: {', '.join(performance['trade_types_used']) if performance['trade_types_used'] else 'None'}
 
+💾 LOG INFORMATION
+Log Storage Path: {retention_status['storage_path']}
+Log Retention Period: {retention_status['retention_policy']}
+Current Log Files: {retention_status['total_files']}
+Files Expiring Soon: {retention_status['soon_to_expire_count']}
+
 {'='*60}
 Report generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Logs will be retained until: {(datetime.now() + timedelta(days=self.log_retention_days)).strftime('%Y-%m-%d')}
         """
         
         return report.strip()
@@ -390,21 +404,76 @@ Report generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         return export_data
     
     def cleanup_old_logs(self):
-        """Clean up old log files"""
+        """Clean up log files older than the retention period (1 month by default)"""
         try:
-            log_files = list(self.log_dir.glob('*.log'))
-            log_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            cutoff_date = datetime.now() - timedelta(days=self.log_retention_days)
+            cutoff_timestamp = cutoff_date.timestamp()
             
-            # Keep only the most recent files
-            for old_file in log_files[self.max_log_files:]:
-                old_file.unlink()
-                self.logger.info(f"Cleaned up old log file: {old_file}")
+            # Clean up all log file types
+            for extension in ['.log', '.csv', '.json']:
+                old_files = list(self.log_dir.glob(f'*{extension}'))
+                
+                for file_path in old_files:
+                    # Check file modification time
+                    mod_time = file_path.stat().st_mtime
+                    if mod_time < cutoff_timestamp:
+                        file_path.unlink()
+                        self.logger.info(f"Cleaned up old file: {file_path} (older than {self.log_retention_days} days)")
                 
         except Exception as e:
             self.logger.error(f"Failed to cleanup old logs: {e}")
+    
+    def get_log_retention_status(self) -> Dict:
+        """
+        Get current status of log retention and storage
+        
+        Returns:
+        --------
+        dict: Log retention status information
+        """
+        log_files = list(self.log_dir.glob('*.*'))
+        now = datetime.now()
+        cutoff_date = now - timedelta(days=self.log_retention_days)
+        
+        # Count files by type
+        file_counts = {
+            'log': len([f for f in log_files if f.suffix == '.log']),
+            'csv': len([f for f in log_files if f.suffix == '.csv']),
+            'json': len([f for f in log_files if f.suffix == '.json']),
+            'other': len([f for f in log_files if f.suffix not in ['.log', '.csv', '.json']])
+        }
+        
+        # Check for files that will expire soon (within 3 days)
+        soon_to_expire = []
+        for file_path in log_files:
+            mod_time = datetime.fromtimestamp(file_path.stat().st_mtime)
+            days_to_expiry = (mod_time + timedelta(days=self.log_retention_days) - now).days
+            
+            if 0 <= days_to_expiry <= 3:
+                soon_to_expire.append({
+                    'file': str(file_path),
+                    'days_remaining': days_to_expiry
+                })
+        
+        return {
+            'retention_policy': f"{self.log_retention_days} days",
+            'total_files': len(log_files),
+            'file_counts': file_counts,
+            'cutoff_date': cutoff_date.strftime('%Y-%m-%d'),
+            'storage_path': str(self.log_dir),
+            'soon_to_expire': soon_to_expire[:10],  # Limit to 10 entries
+            'soon_to_expire_count': len(soon_to_expire)
+        }
     
     def close(self):
         """Close the logger and save final performance"""
         self.save_session_performance()
         self.cleanup_old_logs()
+        
+        # Log retention status summary
+        status = self.get_log_retention_status()
+        self.logger.info(f"Log retention: {status['retention_policy']}, Total files: {status['total_files']}")
+        if status['soon_to_expire_count'] > 0:
+            self.logger.info(f"{status['soon_to_expire_count']} files will expire within 3 days")
+            
         self.logger.info("TradeLogger closed")
