@@ -19,7 +19,7 @@
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 **[Quick Start](#-quick-start)** • **[Architecture](#-architecture)** • **[Commands](#-interactive-commands)** • **[Roadmap](#-roadmap)**
@@ -346,8 +346,8 @@ lumosTrade/
 - [x] Core multi-agent architecture
 - [x] Paper trading integration
 - [x] Memory system (Redis + Qdrant)
-- [ ] Real-time WebSocket market data
-- [ ] Advanced risk models (VaR, CVaR)
+- [x] Real-time WebSocket market data
+- [x] Advanced risk models (VaR, CVaR)
 
 ### Q1 2026
 - [ ] Multi-exchange support (Binance, Coinbase)
