@@ -21,6 +21,8 @@ from src.agents.athena_workspace.tools.market_summarizer import MarketSummarizer
 from src.data_layer.aggregator import InMemoryCache
 # Import memory system
 from src.agents.athena_workspace.memory_manager import AthenaMemoryManager
+from src.agents.athena_workspace.memory_manager import get_global_memory_core
+
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +78,14 @@ class AthenaAgent:
         self.use_memory = use_memory
         self.memory_manager = None
         if use_memory:
-            self.memory_manager = AthenaMemoryManager(agent_id=agent_id, use_redis=use_redis)
-            logger.info(f"Memory system integration enabled for {agent_id}")
+            # Use the global memory core for cross-agent sharing
+            global_memory_core = get_global_memory_core(use_redis=use_redis)
+            self.memory_manager = AthenaMemoryManager(
+                agent_id=agent_id, 
+                use_redis=use_redis,
+                memory_core=global_memory_core
+            )
+            logger.info(f"Memory system integration enabled for {agent_id} with global memory core")
         
         # Context history storage (local fallback)
         self.context_history = []
