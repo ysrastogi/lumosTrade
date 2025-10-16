@@ -18,8 +18,8 @@ class VaRCalculator:
         
         Parameters:
         -----------
-        portfolio : list
-            List of portfolio positions
+        portfolio : dict
+            Portfolio data with 'positions' key containing list of position dicts
         confidence : float
             Confidence level (0-1)
         time_horizon : int
@@ -29,10 +29,15 @@ class VaRCalculator:
         --------
         dict: VaR metrics using different methodologies
         """
-        # Would implement parametric, historical and Monte Carlo VaR
+        # Extract positions - handle both formats: dict with positions key or direct dict of positions
+        if "positions" in portfolio:
+            positions = portfolio["positions"]
+        else:
+            # Portfolio is a dict where values are position dicts
+            positions = list(portfolio.values())
         
-        # Simplified example
-        portfolio_value = sum(p.get("value", 0) for p in portfolio)
+        # Calculate total portfolio value
+        portfolio_value = sum(p.get("value", 0) for p in positions)
         
         # Apply regime-specific risk multiplier
         regime_multiplier = self.regime_multipliers.get(self.market_regime, 1.0)
