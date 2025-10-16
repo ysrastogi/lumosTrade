@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from scipy import stats
 from datetime import datetime, timedelta
 
+from src.agents.daedalus_workspace.models import SimulationResult
+import pandas as pd
+
 class PortfolioRebalancer:
     """Optimize portfolio allocation across multiple strategies"""
     
