@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Union, Any
 from pydantic import BaseModel, Field
 
 
+
 class DirectionalBias(str, Enum):
     """Market directional bias classification"""
     BULL = "bull"
