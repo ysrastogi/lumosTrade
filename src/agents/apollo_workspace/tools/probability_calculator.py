@@ -1,4 +1,6 @@
 from typing import List, Dict, Tuple
+from src.agents.apollo_workspace.models import Signal
+import numpy as np
 
 class ProbabilityCalculator:
     """
