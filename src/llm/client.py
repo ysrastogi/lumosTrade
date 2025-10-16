@@ -5,9 +5,10 @@ from typing import Union, List, Optional, Dict, Any
 
 class GeminiClient: 
     
-    def __init__(self, model: str = "gemini-2.5-flash"):
+    def __init__(self, model: str = "gemini-2.5-flash", embedding_model: str = "gemini-embedding-001"):
         self.client = genai.Client(api_key=settings.gemini_api_key)
         self.model = model
+        self.embedding_model = embedding_model
     
     def generate(self, 
                  prompt: Union[str, List[str]], 
@@ -58,5 +59,38 @@ class GeminiClient:
         
         response = self.client.models.generate_content(**generate_args)
         return response.text
+    
+    def embed(self, 
+              contents: Union[str, List[str]], 
+              model: str = None,
+              **kwargs) -> Union[List[float], List[List[float]]]:
+        """
+        Generate embeddings for the given content(s) using the specified model.
+        
+        Args:
+            contents: A string or list of strings to embed
+            model: The embedding model to use (defaults to self.embedding_model)
+            **kwargs: Additional parameters to pass to the embed_content method
+            
+        Returns:
+            For a single input string: A list of floats representing the embedding
+            For multiple input strings: A list of lists of floats representing embeddings for each input
+        """
+        embed_model = model or self.embedding_model
+        
+        embed_args = {"model": embed_model, "contents": contents}
+        for key, value in kwargs.items():
+            if key not in embed_args:
+                embed_args[key] = value
+        
+        result = self.client.models.embed_content(**embed_args)
+        
+        # If input was a single string, return just the first embedding
+        if isinstance(contents, str):
+            return result.embeddings[0]
+        
+        # If input was a list of strings, return all embeddings
+        return result.embeddings
+
 
 gemini = GeminiClient()
