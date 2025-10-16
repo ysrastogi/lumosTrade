@@ -1,3 +1,7 @@
+import numpy as np
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+
 class ScenarioGenerator:
     """What-if analysis engine"""
     
