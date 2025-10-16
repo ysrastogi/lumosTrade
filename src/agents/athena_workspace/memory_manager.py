@@ -9,12 +9,20 @@ logger = logging.getLogger(__name__)
 
 class AthenaMemoryManager:
     
-    def __init__(self, agent_id: str = "athena_agent", use_redis: bool = True):
+    def __init__(self, agent_id: str = "athena_agent", use_redis: bool = True, memory_core: Optional[MemoryCore] = None):
         self.agent_id = agent_id
         self.use_redis = use_redis
-        self.memory_core = MemoryCore(use_redis=use_redis)
+        
+        # Use provided memory core (global) or create a new one
+        if memory_core is not None:
+            self.memory_core = memory_core
+            logger.info(f"Using provided global memory core for agent {agent_id}")
+        else:
+            self.memory_core = MemoryCore(use_redis=use_redis)
+            self.memory_core.initialize_components()
+            logger.info(f"Created new memory core for agent {agent_id}")
+            
         self.memory_assistant = MemoryAssistant(memory_core=self.memory_core)
-        self.memory_core.initialize_components()
         self._initialized = False
         
         logger.info(f"Athena Memory Manager created for agent {agent_id}")
@@ -68,7 +76,8 @@ class AthenaMemoryManager:
         }
         
         # Store in memory
-        memory_id = await self.memory_assistant.remember(
+        memory_id = await self.memory_core.store_memory(
+            agent_id=self.agent_id,
             content=content,
             memory_type="market_observation",
             tags=[symbol, "market_data"]
@@ -100,7 +109,8 @@ class AthenaMemoryManager:
         }
         
         # Store in memory
-        memory_id = await self.memory_assistant.remember(
+        memory_id = await self.memory_core.store_memory(
+            agent_id=self.agent_id,
             content=content,
             memory_type="market_analysis",
             tags=[symbol, analysis_type]
@@ -120,8 +130,9 @@ class AthenaMemoryManager:
             "insight": insight,
             "confidence": confidence
         }
-        
-        memory_id = await self.memory_assistant.remember(
+
+        memory_id = await self.memory_core.store_memory(
+            agent_id=self.agent_id,
             content=content,
             memory_type="market_insight",
             tags=[symbol, insight_type]
@@ -140,9 +151,9 @@ class AthenaMemoryManager:
         if not self._initialized:
             await self.initialize()
             
-        memories = await self.memory_assistant.recall_recent(
-            limit=limit,
-            memory_types=["market_observation"]
+        memories = await self.memory_core.get_agent_context(
+            agent_id=self.agent_id,
+            context_window=limit
         )
         
         if symbol:
@@ -155,9 +166,9 @@ class AthenaMemoryManager:
         if not self._initialized:
             await self.initialize()
             
-        memories = await self.memory_assistant.recall_recent(
-            limit=limit,
-            memory_types=["market_insight"]
+        memories = await self.memory_core.get_agent_context(
+            agent_id=self.agent_id,
+            context_window=limit
         )
         
         if symbol:
@@ -166,16 +177,147 @@ class AthenaMemoryManager:
         return memories
         
     async def get_context(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get comprehensive memory context including observations, insights, and other data.
+        
+        Args:
+            symbol: Optional symbol to filter memories by
+            
+        Returns:
+            Dictionary with memory context
+        """
         if not self._initialized:
             await self.initialize()
-            
-        context = await self.memory_assistant.get_context(window_size=20)
-    
+
+        # Get agent-specific context
+        agent_memories = await self.memory_core.get_agent_context(
+            agent_id=self.agent_id,
+            context_window=20
+        )
+        
+        # Get market observations from episodic memory store
+        observations = await self.memory_core.episodic_store.get_by_type(
+            agent_id=self.agent_id,  # Initially search only this agent's memories
+            memory_type="market_observation",
+            limit=10
+        )
+        
+        # Get market insights from episodic memory store
+        insights = await self.memory_core.episodic_store.get_by_type(
+            agent_id=self.agent_id,
+            memory_type="market_insight",
+            limit=10
+        )
+        
+        # If symbol is specified, filter the results
         if symbol:
-            if "recent_memories" in context:
-                context["recent_memories"] = [
-                    m for m in context["recent_memories"] 
-                    if m.get("data", {}).get("symbol") == symbol
-                ]
+            # Filter observations and insights by symbol, checking different possible memory formats
+            filtered_observations = []
+            for obs in observations:
+                # Check different possible locations of the symbol in the memory structure
+                content = obs.get('content', {})
+                if content.get('symbol') == symbol:
+                    filtered_observations.append(obs)
+                elif content.get('data', {}).get('symbol') == symbol:
+                    filtered_observations.append(obs)
+                # Add more patterns if needed
+            observations = filtered_observations
+            
+            filtered_insights = []
+            for insight in insights:
+                content = insight.get('content', {})
+                if content.get('symbol') == symbol:
+                    filtered_insights.append(insight)
+                elif content.get('data', {}).get('symbol') == symbol:
+                    filtered_insights.append(insight)
+            insights = filtered_insights
+        # Now try to get cross-agent observations if available
+        # We'll check for known agents directly
+        cross_agent_observations = []
+        cross_agent_insights = []
+        
+        try:
+            # Known agent IDs (hardcoded for now)
+            known_agents = ["apollo_agent", "chronos_agent", "daedalus_agent", "hermes_agent"]
+            agent_ids = [agent_id for agent_id in known_agents if agent_id != self.agent_id]
+            
+            # Get memories from other agents
+            for other_agent_id in agent_ids:
+                try:
+                    # Get observations from other agent
+                    other_obs = await self.memory_core.episodic_store.get_by_type(
+                        agent_id=other_agent_id,
+                        memory_type="market_observation",
+                        limit=5
+                    )
+                    
+                    # Get insights from other agent
+                    other_insights = await self.memory_core.episodic_store.get_by_type(
+                        agent_id=other_agent_id,
+                        memory_type="market_insight",
+                        limit=5
+                    )
+                    
+                    # Filter by symbol if needed
+                    if symbol:
+                        other_obs = [
+                            obs for obs in other_obs 
+                            if obs.get('content', {}).get('symbol') == symbol
+                        ]
+                        other_insights = [
+                            insight for insight in other_insights 
+                            if insight.get('content', {}).get('symbol') == symbol
+                        ]
+                    
+                    # Add to cross-agent collections
+                    cross_agent_observations.extend(other_obs)
+                    cross_agent_insights.extend(other_insights)
+                except Exception as e:
+                    # Skip if this agent has no memories
+                    logger.debug(f"Error retrieving memories from {other_agent_id}: {e}")
                 
-        return context
+            # Add cross-agent memories to main collections
+            observations.extend(cross_agent_observations)
+            insights.extend(cross_agent_insights)
+            
+        except Exception as e:
+            logger.warning(f"Error retrieving cross-agent memories: {e}")
+                
+        return {
+            "agent_id": self.agent_id,
+            "timestamp": datetime.now().isoformat(),
+            "symbol_filter": symbol,
+            "memories": agent_memories,
+            "observations": observations,
+            "insights": insights,
+            "intelligence_summary": {
+                "observation_count": len(observations),
+                "insight_count": len(insights),
+                "cross_agent_observations": len(cross_agent_observations),
+                "cross_agent_insights": len(cross_agent_insights),
+            }
+        }
+
+
+# Global memory core instance for cross-agent sharing
+_global_memory_core = None
+
+def get_global_memory_core(use_redis: bool = True) -> MemoryCore:
+    """
+    Get or create a global memory core instance for cross-agent memory sharing.
+    This ensures all agents (Athena, Apollo, etc.) use the same memory core.
+
+    Args:
+        use_redis: Whether to use Redis for persistence
+
+    Returns:
+        Global MemoryCore instance
+    """
+    global _global_memory_core
+
+    if _global_memory_core is None:
+        _global_memory_core = MemoryCore(use_redis=use_redis)
+        _global_memory_core.initialize_components()
+        logger.info("Created global memory core for cross-agent sharing")
+
+    return _global_memory_core
