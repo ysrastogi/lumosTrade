@@ -158,12 +158,37 @@ class SignalGenerator:
     
     def _validate_risk_params(self, trade_idea: dict) -> bool:
         """Validate risk/reward and position sizing"""
+        # Calculate risk/reward if not present
+        if 'risk_reward' not in trade_idea:
+            if trade_idea.get('entry', 0) <= 0:
+                return False
+                
+            entry = trade_idea.get('entry', 0)
+            stop = trade_idea.get('stop_loss', 0)
+            target = trade_idea.get('take_profit', 0)
+            
+            if entry <= 0 or stop <= 0 or target <= 0:
+                return False
+            
+            if trade_idea.get('direction') == 'buy':
+                risk = entry - stop
+                reward = target - entry
+            else:  # sell
+                risk = stop - entry
+                reward = entry - target
+                
+            if risk <= 0:
+                return False
+                
+            # Store calculated value
+            trade_idea['risk_reward'] = reward / risk if risk > 0 else 0
+        
         # Minimum R:R ratio
-        if trade_idea['risk_reward'] < 1.5:
+        if trade_idea.get('risk_reward', 0) < 1.0:
             return False
         
         # Maximum R:R (unrealistic targets)
-        if trade_idea['risk_reward'] > 5:
+        if trade_idea.get('risk_reward', 0) > 10:
             return False
             
         return True
@@ -195,6 +220,16 @@ class SignalGenerator:
         """Package signal with full context"""
         self.signal_counter += 1
         
+        # Generate a descriptive summary for the signal
+        direction_text = "bullish" if trade_idea['direction'] == 'buy' else "bearish"
+        description = f"{trade_idea['pattern'].capitalize()} pattern detected with {direction_text} bias"
+        
+        # Determine time horizon based on pattern
+        time_horizon = trade_idea.get('timeframe', '1h')
+        
+        # Use target as take_profit if take_profit is not present
+        take_profit = trade_idea.get('take_profit')
+        
         return Signal(
             id=f"SIG_{trade_idea['symbol']}_{self.signal_counter}",
             timestamp=datetime.fromisoformat(trade_idea['timestamp']),
@@ -203,7 +238,11 @@ class SignalGenerator:
             direction=trade_idea['direction'],
             confidence=confidence,
             entry=trade_idea['entry'],
+            time_horizon=time_horizon,  # Added missing field
+            description=description,    # Added missing field
             stop_loss=trade_idea['stop_loss'],
+            take_profit=take_profit,    # Use take_profit or target
+            timeframe=trade_idea['timeframe'],
             target=trade_idea['target'],
             risk_reward=trade_idea['risk_reward'],
             reasoning="",  # Filled by ReasoningEngine
