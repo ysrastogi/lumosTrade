@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from datetime import datetime
 import logging
 
@@ -17,16 +17,21 @@ class ApolloMemoryManager:
     Memory manager for Apollo to access market data and analysis stored by Athena
     """
     
-    def __init__(self, agent_id: str = "apollo_agent", use_redis: bool = True):
+    def __init__(self, agent_id: str = "apollo_agent", use_redis: bool = True, memory_core: Optional[MemoryCore] = None):
         self.agent_id = agent_id
         self.use_redis = use_redis
         
         # Use a persistent session ID for this agent - each agent gets its own session
         self.persistent_session_id = f"persistent_session_{agent_id}"
         
-        # Use global memory core for cross-agent access
-        self.memory_core = get_global_memory_core(use_redis=use_redis)
-        logger.info(f"Using global memory core for cross-agent access")
+        # Use provided memory core or get the global one
+        if memory_core is not None:
+            self.memory_core = memory_core
+            logger.info(f"Using provided memory core for agent {agent_id}")
+        else:
+            # Use global memory core for cross-agent access
+            self.memory_core = get_global_memory_core(use_redis=use_redis)
+            logger.info(f"Using global memory core for cross-agent access")
         
         # Each agent gets its own memory assistant instance but shares the core
         self.memory_assistant = MemoryAssistant(memory_core=self.memory_core)
@@ -185,14 +190,64 @@ class ApolloMemoryManager:
             content=content
         )
         
+        # Store in global memory for cross-agent access
+        await self.store_to_global_memory(
+            memory_type="signal_analysis",
+            content=content,
+            tags=[signal.symbol, signal.pattern, signal.direction]
+        )
+        
         return memory_id
         
-    async def get_market_context(self, symbol: str) -> Dict[str, Any]:
+    async def store_to_global_memory(self, memory_type: str, content: Dict[str, Any], 
+                                    tags: List[str] = None) -> str:
+        """
+        Store any type of data in global memory context for cross-agent access.
+        
+        Args:
+            memory_type: Type of memory (e.g. signal_analysis, market_insight, narrative)
+            content: Content to store
+            tags: Optional tags for memory retrieval
+            
+        Returns:
+            str: Memory ID
+        """
+        if not self._initialized:
+            await self.initialize()
+            
+        # Ensure content has timestamp and agent attribution
+        if "timestamp" not in content:
+            content["timestamp"] = datetime.now().isoformat()
+            
+        if "agent_id" not in content:
+            content["agent_id"] = self.agent_id
+            
+        # Use the global memory core directly
+        memory_id = await self.memory_core.store_memory(
+            agent_id=self.agent_id,
+            memory_type=memory_type,
+            content=content,
+            tags=tags or []
+        )
+        
+        # Publish to message bus for immediate notification to other agents
+        await self.memory_core.publish_message(
+            sender_id=self.agent_id,
+            topic=f"global_memory_{memory_type}",
+            content=content
+        )
+        
+        logger.info(f"Stored {memory_type} in global memory with ID {memory_id}")
+        
+        return memory_id
+        
+    async def get_market_context(self, symbol: str, agent_ids=None) -> Dict[str, Any]:
         """
         Get the latest market context for a symbol from across all agents
         
         Args:
             symbol: Market symbol to get context for
+            agent_ids: Optional list of specific agent IDs to retrieve observations from
             
         Returns:
             Latest market observation for the symbol with patterns and analysis data
@@ -202,7 +257,7 @@ class ApolloMemoryManager:
             
         try:
             # First, try to get recent observations from any agent (especially Athena)
-            all_observations = await self.recall_cross_agent_observations(symbol=symbol)
+            all_observations = await self.recall_cross_agent_observations(symbol=symbol, agent_ids=agent_ids)
             
             # Hold the observation and analysis data
             observation_data = {}
@@ -212,7 +267,7 @@ class ApolloMemoryManager:
             # Check if Athena has observations for this symbol
             athena_agent_id = None
             for agent_id, observations in all_observations.items():
-                if "athena" in agent_id.lower() and observations:
+                if observations and len(observations) > 0:
                     # Sort by timestamp if available to get the most recent
                     observations.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
                     logger.info(f"Found market data for {symbol} from agent {agent_id}")
@@ -539,20 +594,44 @@ class ApolloMemoryManager:
             logger.error(f"Error getting agent memory summary for {agent_id}: {str(e)}")
             return {"error": f"Failed to get memory summary: {str(e)}"}
     
-    async def get_global_memory_context(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+    async def get_context(self, symbol: Optional[str] = None, agent_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Get comprehensive memory context including observations, insights, and other data.
+        
+        Args:
+            symbol: Optional symbol to filter memories by
+            agent_ids: Optional list of specific agent IDs to query
+            
+        Returns:
+            Dictionary with memory context
+        """
+        # For compatibility with AthenaMemoryManager, delegate to global_memory_context
+        return await self.get_global_memory_context(symbol=symbol, agent_ids=agent_ids)
+    
+    async def get_global_memory_context(self, symbol: Optional[str] = None, 
+                              agent_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Get global memory context across all agents for enhanced intelligence.
         
         Args:
             symbol: Optional symbol to filter by
+            agent_ids: Optional list of specific agent IDs to query
             
         Returns:
             Dict with global memory context including all agent perspectives
         """
         try:
             # Get cross-agent observations and insights
-            all_observations = await self.recall_cross_agent_observations(symbol=symbol, limit=10)
-            all_insights = await self.recall_cross_agent_insights(symbol=symbol, limit=15)
+            all_observations = await self.recall_cross_agent_observations(
+                symbol=symbol, 
+                agent_ids=agent_ids,
+                limit=10
+            )
+            all_insights = await self.recall_cross_agent_insights(
+                symbol=symbol, 
+                agent_ids=agent_ids,
+                limit=15
+            )
             
             # Calculate statistics
             total_observations = sum(len(obs) for obs in all_observations.values())
