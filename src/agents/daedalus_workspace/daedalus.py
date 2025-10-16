@@ -8,6 +8,16 @@ from scipy import stats
 from datetime import datetime, timedelta
 import pandas as pd
 import logging
+from backtesting import Backtest, Strategy
+
+from src.agents.daedalus_workspace.tools.monte_carlo_engine import MonteCarloEngine
+from src.agents.daedalus_workspace.tools.strategy_evolver import MLStrategyEvolver
+from src.agents.daedalus_workspace.tools.parameter_optimizer import ParameterOptimizer
+from src.agents.daedalus_workspace.tools.walk_forward_analyzer import WalkForwardAnalyzer
+from src.agents.daedalus_workspace.tools.portfolio_rebalancer import PortfolioRebalancer
+from src.agents.daedalus_workspace.tools.scenario_generator import ScenarioGenerator
+from src.agents.daedalus_workspace.tools.execution_simulator import ExecutionSimulator
+from src.agents.daedalus_workspace.memory_manager import DaedalusMemory
 
 from src.llm.client import GeminiClient, gemini
 from src.agents.daedalus_workspace.models import (
@@ -36,14 +46,7 @@ from src.agents.daedalus_workspace.prompts.base import (
     TOKEN_LIMITS
 )
 
-from src.agents.daedalus_workspace.tools.monte_carlo_engine import MonteCarloEngine
-from src.agents.daedalus_workspace.tools.strategy_evolver import MLStrategyEvolver
-from src.agents.daedalus_workspace.tools.parameter_optimizer import ParameterOptimizer
-from src.agents.daedalus_workspace.tools.walk_forward_analyzer import WalkForwardAnalyzer
-from src.agents.daedalus_workspace.tools.portfolio_rebalancer import PortfolioRebalancer
-from src.agents.daedalus_workspace.tools.scenario_generator import ScenarioGenerator
-from src.agents.daedalus_workspace.tools.execution_simulator import ExecutionSimulator
-from src.agents.daedalus_workspace.memory_manager import DaedalusMemory
+
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +57,71 @@ class DaedalusAgent:
     
     def __init__(self):
         self.memory = DaedalusMemory()
-        self.monte_carlo = MonteCarloEngine(n_simulations=10000)
+        self.monte_carlo = MonteCarloEngine(num_paths=10000)
         self.scenario_gen = ScenarioGenerator()
         self.execution_sim = ExecutionSimulator()
         
         logger.info("DAEDALUS Agent initialized - The Architect of Possibilities")
+    
+    def _create_backtest_strategy(self, strategy_config: StrategyConfig):
+        """Create a backtesting.py Strategy class from StrategyConfig"""
+        
+        class DynamicStrategy(Strategy):
+            def init(self):
+                # Initialize indicators based on strategy parameters
+                params = strategy_config.parameters
+                
+                if strategy_config.strategy_type == "momentum":
+                    # Moving average crossover strategy
+                    if "fast" in params and "slow" in params:
+                        self.fast_ma = self.I(lambda: pd.Series(self.data.Close).rolling(params["fast"]).mean())
+                        self.slow_ma = self.I(lambda: pd.Series(self.data.Close).rolling(params["slow"]).mean())
+                    
+                elif strategy_config.strategy_type == "mean_reversion":
+                    # RSI-based mean reversion
+                    if "rsi_period" in params:
+                        self.rsi = self.I(lambda: self._calculate_rsi(params["rsi_period"]))
+                    if "upper_threshold" in params:
+                        self.upper_threshold = params["upper_threshold"]
+                    if "lower_threshold" in params:
+                        self.lower_threshold = params["lower_threshold"]
+                        
+                # Add more strategy types as needed
+                
+            def _calculate_rsi(self, period):
+                """Calculate RSI indicator"""
+                close = pd.Series(self.data.Close)
+                delta = close.diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+                rs = gain / loss
+                return 100 - (100 / (1 + rs))
+            
+            def next(self):
+                # Implement trading logic based on strategy type and entry/exit rules
+                if strategy_config.strategy_type == "momentum":
+                    if "ma_cross_up" in strategy_config.entry_rules and self.fast_ma[-1] > self.slow_ma[-1] and self.fast_ma[-2] <= self.slow_ma[-2]:
+                        self.buy()
+                    elif "ma_cross_down" in strategy_config.exit_rules and self.fast_ma[-1] < self.slow_ma[-1] and self.fast_ma[-2] >= self.slow_ma[-2]:
+                        self.sell()
+                        
+                elif strategy_config.strategy_type == "mean_reversion":
+                    if hasattr(self, 'rsi') and hasattr(self, 'upper_threshold') and hasattr(self, 'lower_threshold'):
+                        if "rsi_oversold" in strategy_config.entry_rules and self.rsi[-1] < self.lower_threshold:
+                            self.buy()
+                        elif "rsi_overbought" in strategy_config.exit_rules and self.rsi[-1] > self.upper_threshold:
+                            self.sell()
+                
+                # Add risk management
+                if strategy_config.risk_params.get("stop_loss"):
+                    if self.position and self.position.pl_pct < -strategy_config.risk_params["stop_loss"]:
+                        self.position.close()
+                        
+                if strategy_config.risk_params.get("take_profit"):
+                    if self.position and self.position.pl_pct > strategy_config.risk_params["take_profit"]:
+                        self.position.close()
+        
+        return DynamicStrategy
     
     def run_simulation(
         self,
@@ -66,28 +129,74 @@ class DaedalusAgent:
         data: pd.DataFrame,
         initial_capital: float = 100000
     ) -> SimulationResult:
-        """Run a complete strategy simulation"""
+        """Run a complete strategy simulation using backtesting.py"""
         strategy_id = strategy.get_id()
         
-        # Placeholder for actual backtest - would integrate with Backtesting.py
-        # This demonstrates the structure
-        returns = data['close'].pct_change().dropna()
+        # Create the backtesting strategy
+        bt_strategy = self._create_backtest_strategy(strategy)
         
-        # Calculate metrics (simplified for demonstration)
-        total_return = (1 + returns).prod() - 1
-        sharpe = returns.mean() / returns.std() * np.sqrt(252) if returns.std() > 0 else 0
-        sortino = returns.mean() / returns[returns < 0].std() * np.sqrt(252) if len(returns[returns < 0]) > 0 else 0
+        # Prepare data for backtesting.py (expects OHLC columns)
+        if not all(col in data.columns for col in ['Open', 'High', 'Low', 'Close']):
+            # If only close data, create OHLC from close
+            data = data.copy()
+            data['Open'] = data['close']
+            data['High'] = data['close']
+            data['Low'] = data['close']
+            data['Close'] = data['close']
         
-        cumulative = (1 + returns).cumprod()
-        running_max = cumulative.expanding().max()
-        drawdown = (cumulative - running_max) / running_max
-        max_dd = drawdown.min()
+        # Run the backtest
+        bt = Backtest(data, bt_strategy, cash=initial_capital, commission=.002)
+        result = bt.run()
+        
+        # Extract metrics from backtesting.py result
+        total_return = result['Return [%]'] / 100
+        sharpe = result.get('Sharpe Ratio', 0)
+        max_dd = result['Max. Drawdown [%]'] / 100
+        
+        # Calculate additional metrics
+        equity_curve = result._equity_curve['Equity'].tolist() if hasattr(result, '_equity_curve') else []
+        
+        # Calculate win rate and other metrics from trades
+        trades = result._trades if hasattr(result, '_trades') else None
+        win_rate = 0.5  # Default
+        total_trades = 0
+        profit_factor = 1.5  # Default
+        
+        if trades is not None and not trades.empty:
+            total_trades = len(trades)
+            winning_trades = trades[trades['PnL'] > 0]
+            win_rate = len(winning_trades) / len(trades) if len(trades) > 0 else 0
+            gross_profit = winning_trades['PnL'].sum()
+            gross_loss = abs(trades[trades['PnL'] < 0]['PnL'].sum())
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+        
+        # Calculate sortino ratio (simplified)
+        returns = pd.Series(equity_curve).pct_change().dropna() if equity_curve else pd.Series([0])
+        sortino = returns.mean() / returns[returns < 0].std() * np.sqrt(252) if len(returns[returns < 0]) > 0 and returns[returns < 0].std() > 0 else 0
         
         # Consistency score based on rolling Sharpe stability
         rolling_sharpe = returns.rolling(63).mean() / returns.rolling(63).std() * np.sqrt(252)
-        consistency = 1 / (1 + rolling_sharpe.std()) if not rolling_sharpe.isna().all() else 0
+        consistency = 1 / (1 + rolling_sharpe.std()) if not rolling_sharpe.isna().all() and rolling_sharpe.std() > 0 else 0
         
-        result = SimulationResult(
+        # Calculate annual metrics
+        annual_return = total_return * (252 / len(returns)) if len(returns) > 0 else 0
+        annual_volatility = returns.std() * np.sqrt(252) if len(returns) > 0 else 0
+        
+        # Extract trade details
+        trade_details = []
+        if hasattr(result, '_trades') and result._trades is not None and not result._trades.empty:
+            for _, trade in result._trades.iterrows():
+                trade_details.append({
+                    'entry_time': trade.get('EntryTime', None),
+                    'exit_time': trade.get('ExitTime', None),
+                    'entry_price': trade.get('EntryPrice', 0),
+                    'exit_price': trade.get('ExitPrice', 0),
+                    'pnl': trade.get('PnL', 0),
+                    'size': trade.get('Size', 0),
+                    'duration': trade.get('Duration', 0)
+                })
+        
+        simulation_result = SimulationResult(
             strategy_id=strategy_id,
             strategy_name=strategy.name,
             parameters=strategy.parameters,
@@ -95,24 +204,24 @@ class DaedalusAgent:
             sharpe_ratio=sharpe,
             sortino_ratio=sortino,
             max_drawdown=max_dd,
-            win_rate=0.55,  # Placeholder
-            profit_factor=1.5,  # Placeholder
-            total_trades=100,  # Placeholder
-            avg_trade_duration=5.0,  # Placeholder
+            win_rate=win_rate,
+            profit_factor=profit_factor,
+            total_trades=total_trades,
+            avg_trade_duration=result.get('Avg. Trade Duration', 5.0),
             calmar_ratio=total_return / abs(max_dd) if max_dd != 0 else 0,
-            omega_ratio=1.2,  # Placeholder
-            tail_ratio=0.8,  # Placeholder
+            omega_ratio=result.get('Omega Ratio', 1.2),
+            tail_ratio=result.get('Tail Ratio', 0.8),
             consistency_score=consistency,
-            annual_return=total_return * (252 / len(returns)),
-            annual_volatility=returns.std() * np.sqrt(252),
+            annual_return=annual_return,
+            annual_volatility=annual_volatility,
             avg_slippage=0.0005,
-            avg_commission=0.001,
-            equity_curve=cumulative.tolist(),
-            trades=[]
+            avg_commission=result.get('Avg. Commission', 0.001),
+            equity_curve=equity_curve,
+            trades=trade_details
         )
         
-        self.memory.add_result(result)
-        return result
+        self.memory.add_result(simulation_result)
+        return simulation_result
     
     def optimize_strategy(
         self,
