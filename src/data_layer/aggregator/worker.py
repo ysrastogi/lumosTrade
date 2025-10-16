@@ -627,7 +627,7 @@ class InMemoryCache:
 
 class AggregatorWorker:
     
-    def __init__(self, callback: Callable[[Dict[str, Any]], None], max_queue_size: int = 10000, name: str = "market_aggregator_worker"):
+    def __init__(self, callback: Callable[[Dict[str, Any]], None], max_queue_size: int = 100000, name: str = "market_aggregator_worker"):
         self.queue = queue.Queue(maxsize=max_queue_size)
         self.worker_thread = None
         self.running = False
