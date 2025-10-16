@@ -6,7 +6,6 @@ import asyncio
 from collections import deque
 from typing import Dict, List, Optional, Any, Union
 
-from src.memory.assistant import MemoryAssistant
 from src.memory.memory_core import MemoryCore
 
 # Use the global memory core from existing system
@@ -71,8 +70,6 @@ class ChronosMemory:
         # Initialize integration with global memory system
         self.agent_id = f"chronos_agent_{user_id}"
         self.memory_core = get_global_memory_core(use_redis=use_redis)
-        self.memory_assistant = MemoryAssistant(memory_core=self.memory_core)
-        self.memory_assistant.agent_id = self.agent_id
         self._initialized = False
         
         self._load_memory()
@@ -98,9 +95,11 @@ class ChronosMemory:
         }
         
         try:
-            success = await self.memory_assistant.initialize_for_agent(
+            # Register agent directly with memory core
+            success = await self.memory_core.register_agent(
                 agent_id=self.agent_id,
-                agent_metadata=agent_metadata
+                role="Portfolio risk management and behavioral analysis",
+                output_schema=["text", "json"]
             )
             
             if success:
@@ -169,14 +168,16 @@ class ChronosMemory:
         # Store in global memory system
         try:
             # Store the detailed risk assessment
-            memory_id = await self.memory_assistant.remember(
+            memory_id = await self.memory_core.store_memory(
+                agent_id=self.agent_id,
                 content=entry,
                 memory_type="risk_assessment",
                 tags=["risk_history", "var", "drawdown", "position_sizing"]
             )
             
             # Also publish summary to risk_assessment topic for other agents
-            await self.memory_assistant.send_message(
+            await self.memory_core.publish_message(
+                sender_id=self.agent_id,
                 topic="risk_assessment",
                 content={
                     "timestamp": timestamp,
@@ -243,14 +244,14 @@ class ChronosMemory:
         # Store in global memory system
         try:
             # Store win/loss behavior
-            await self.memory_assistant.remember(
+            await self.memory_core.store_memory(agent_id=self.agent_id,
                 content=win_loss_entry,
                 memory_type="behavioral_pattern",
                 tags=["win_loss_behavior", "trade_behavior"]
             )
             
             # Store position sizing trend
-            await self.memory_assistant.remember(
+            await self.memory_core.store_memory(agent_id=self.agent_id,
                 content=position_entry,
                 memory_type="behavioral_pattern",
                 tags=["position_sizing_trends", "trade_behavior"]
@@ -258,7 +259,7 @@ class ChronosMemory:
             
             # If emotional state is provided, record it separately with more detailed tagging
             if emotional_state:
-                await self.memory_assistant.remember(
+                await self.memory_core.store_memory(agent_id=self.agent_id,
                     content={
                         "timestamp": datetime.datetime.now().isoformat(),
                         "user_id": self.user_id,
@@ -328,7 +329,7 @@ class ChronosMemory:
         
         try:
             # Store regime observation
-            await self.memory_assistant.remember(
+            await self.memory_core.store_memory(agent_id=self.agent_id,
                 content=regime_entry,
                 memory_type="market_regime",
                 tags=["market_regime", "volatility", regime]
@@ -336,14 +337,15 @@ class ChronosMemory:
             
             # If this is a transition, store that too and notify other agents
             if transition_entry:
-                await self.memory_assistant.remember(
+                await self.memory_core.store_memory(agent_id=self.agent_id,
                     content=transition_entry,
                     memory_type="regime_transition",
                     tags=["market_regime", "transition", previous_regime, regime]
                 )
                 
                 # Publish transition message for other agents
-                await self.memory_assistant.send_message(
+                await self.memory_core.publish_message(
+                    sender_id=self.agent_id,
                     topic="market_data",
                     content={
                         "timestamp": timestamp,
@@ -402,14 +404,16 @@ class ChronosMemory:
         # Store in global memory system
         try:
             # Store the violation
-            memory_id = await self.memory_assistant.remember(
+            memory_id = await self.memory_core.store_memory(
+                agent_id=self.agent_id,
                 content=violation_entry,
                 memory_type="risk_violation",
                 tags=["violation", violation_type]
             )
             
             # Send alert message to other agents
-            await self.memory_assistant.send_message(
+            await self.memory_core.publish_message(
+                sender_id=self.agent_id,
                 topic="risk_assessment",
                 content={
                     "message_type": "violation_alert",
@@ -461,8 +465,8 @@ class ChronosMemory:
         if len(self.risk_history) < lookback_days:
             try:
                 # Query memory system for more risk history
-                memories = await self.memory_assistant.recall(
-                    query="historical risk assessment metrics",
+                memories = await self.memory_core.episodic_store.get_recent(
+                    agent_id=self.agent_id,
                     limit=lookback_days,
                     memory_types=["risk_assessment"]
                 )
@@ -520,8 +524,8 @@ class ChronosMemory:
             
         try:
             # Query memory system for risk assessments
-            memories = await self.memory_assistant.recall(
-                query="risk assessment history",
+            memories = await self.memory_core.episodic_store.get_recent(
+                agent_id=self.agent_id,
                 limit=limit,
                 memory_types=["risk_assessment"]
             )
@@ -548,8 +552,8 @@ class ChronosMemory:
             
         try:
             # Query memory system for violations
-            memories = await self.memory_assistant.recall(
-                query="risk rule violations",
+            memories = await self.memory_core.episodic_store.get_recent(
+                agent_id=self.agent_id,
                 limit=limit,
                 memory_types=["risk_violation"]
             )
@@ -593,8 +597,8 @@ class ChronosMemory:
         
         # Get detected biases from memory system if possible
         try:
-            bias_memories = await self.memory_assistant.recall(
-                query="trader psychological biases",
+            bias_memories = await self.memory_core.episodic_store.get_recent(
+                agent_id=self.agent_id,
                 limit=10,
                 memory_types=["behavioral_pattern"]
             )
@@ -646,8 +650,8 @@ class ChronosMemory:
             violations = await self.recall_violations(limit=3)
             
             # Get recent regime transitions
-            regime_memories = await self.memory_assistant.recall(
-                query="market regime transitions",
+            regime_memories = await self.memory_core.episodic_store.get_recent(
+                agent_id=self.agent_id,
                 limit=3,
                 memory_types=["regime_transition"]
             )
@@ -656,11 +660,8 @@ class ChronosMemory:
             # Get behavioral insights
             behavioral_patterns = await self.get_behavioral_patterns()
             
-            # Get cross-agent intelligence
-            cross_agent_insights = await self.memory_assistant.recall_by_agents(
-                agent_ids=["athena_agent", "apollo_agent"],
-                limit=5
-            ) if hasattr(self.memory_assistant, "recall_by_agents") else []
+            # Get cross-agent intelligence (simplified - would need multiple calls for different agents)
+            cross_agent_insights = []  # TODO: Implement cross-agent memory retrieval if needed
             
             # Compile context
             context = {
@@ -718,7 +719,7 @@ class ChronosMemory:
             }
             
             # Store memory state snapshot
-            await self.memory_assistant.remember(
+            await self.memory_core.store_memory(agent_id=self.agent_id,
                 content=memory_state,
                 memory_type="memory_state",
                 tags=["chronos_memory_state", "risk_management"]
@@ -742,8 +743,8 @@ class ChronosMemory:
             
         try:
             # Retrieve memory state from memory system
-            memories = await self.memory_assistant.recall(
-                query=f"chronos memory state for user {self.user_id}",
+            memories = await self.memory_core.episodic_store.get_recent(
+                agent_id=self.agent_id,
                 limit=1,
                 memory_types=["memory_state"]
             )
