@@ -83,3 +83,16 @@ class OptimizationTask:
     status: SimulationStatus = SimulationStatus.QUEUED
     best_params: Optional[Dict] = None
     best_score: float = -np.inf
+
+
+@dataclass
+class MonteCarloResult:
+    """Results from Monte Carlo simulation"""
+    paths: np.ndarray
+    mean_return: float
+    std_return: float
+    percentile_5: float
+    percentile_95: float
+    var_95: float  # Value at Risk
+    cvar_95: float  # Conditional VaR
+    max_drawdown_dist: np.ndarray
