@@ -154,7 +154,7 @@ class ChronosAgent:
         self.memory = ChronosMemory(trader_profile["user_id"])
         self.llm_engine = ChronosLLMEngine()
         
-    def evaluate_risk(self, portfolio, market_data, proposed_trade=None):
+    async def evaluate_risk(self, portfolio, market_data, proposed_trade=None):
         """
         Perform comprehensive risk assessment on current portfolio and proposed trades.
         
@@ -175,7 +175,7 @@ class ChronosAgent:
         )
         
         # Store analysis in memory
-        self.memory.update_risk_history(position_risk, drawdown_risk, var_metrics)
+        await self.memory.update_risk_history(position_risk, drawdown_risk, var_metrics)
         
         # Generate recommendations
         recommendations = self._generate_recommendations(
@@ -188,7 +188,7 @@ class ChronosAgent:
         
         # Log any risk violations
         if self._check_violations(position_risk, drawdown_risk, var_metrics):
-            self.memory.log_violation(portfolio, market_data, proposed_trade)
+            await self.memory.log_violation(list(portfolio.values()), market_data, proposed_trade)
         
         return {
             "risk_assessment": {
