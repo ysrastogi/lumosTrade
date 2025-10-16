@@ -73,14 +73,45 @@ class PositionSizer:
         """
         Analyze current portfolio position sizing.
         
+        Parameters:
+        -----------
+        portfolio : dict
+            Portfolio data with 'positions' key containing list of position dicts
+            
         Returns:
         --------
         dict: Analysis of current position sizing
         """
-        # Implementation would analyze current positions against optimal
+        # Extract positions - handle both formats: dict with positions key or direct dict of positions
+        if "positions" in portfolio:
+            positions = portfolio["positions"]
+        else:
+            # Portfolio is a dict where values are position dicts
+            positions = list(portfolio.values())
+        
+        if not positions:
+            # Return safe defaults if no positions
+            return {
+                "largest_position_pct": 0.0,
+                "largest_position_name": "",
+                "total_exposure": 0.0,
+                "optimal_adjustments": {}
+            }
+        
+        # Calculate largest position percentage
+        largest_position_pct = max([p.get("allocation", 0) for p in positions])
+        
+        # Find the largest position name
+        largest_position = max(positions, key=lambda p: p.get("allocation", 0))
+        largest_position_name = largest_position.get("symbol", largest_position.get("name", "Unknown"))
+        
+        # Calculate total exposure
+        total_exposure = sum(p.get("allocation", 0) for p in positions)
+        
         return {
-            "largest_position_pct": max([p.get("allocation", 0) for p in portfolio]),
-            "largest_position_name": portfolio[0].get("name", "Unknown"),  # Simplified
+            "largest_position_pct": largest_position_pct,
+            "largest_position_name": largest_position_name,
+            "total_exposure": total_exposure,
             "optimal_adjustments": {}  # Would contain recommended adjustments
         }
     
