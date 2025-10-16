@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     deriv_auth_token: str = os.environ.get("DERIV_AUTH_TOKEN", "")
     gemini_api_key: str = os.environ.get("GEMINI_API_KEY", "")
     qdrant_api_key: Optional[str] = os.environ.get("QDRANT_API_KEY", None)
+    qdrant_url: Optional[str] = os.environ.get("QDRANT_URL", "http://localhost:6333")
     api_host: str = os.environ.get("API_HOST", "")
     api_port: int = int(os.environ.get("API_PORT", 9000))
     ws_host: str = os.environ.get("WS_HOST", "")
