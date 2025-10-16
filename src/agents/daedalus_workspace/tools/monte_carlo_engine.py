@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from scipy import stats
 from datetime import datetime, timedelta
 
+from src.agents.daedalus_workspace.models import MonteCarloResult
+
 class MonteCarloEngine:
     """Ultra-fast Monte Carlo simulation engine"""
     
