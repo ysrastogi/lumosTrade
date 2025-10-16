@@ -1,3 +1,7 @@
+from typing import List, Dict
+from src.agents.apollo_workspace.models import Signal
+import numpy as np
+
 class BacktestValidator:
     """
     Rapid historical validation of signals
