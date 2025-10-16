@@ -1,3 +1,6 @@
+from typing import List, Tuple
+from src.agents.apollo_workspace.models import Signal
+
 class ConfluenceAnalyzer:
     """
     Identifies and quantifies supporting/conflicting factors
