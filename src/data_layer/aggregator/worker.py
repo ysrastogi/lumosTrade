@@ -20,17 +20,6 @@ from src.data_layer.worker_manager import WorkerManager
 logger = logging.getLogger(__name__)
 
 class InMemoryCache:
-    """
-    Multi-process cache for storing market data using Redis
-    This cache serves as the single source of truth for all APIs and agents across different processes
-    
-    Configuration via environment variables:
-    - REDIS_URL: The Redis connection URL (default: redis://localhost:6379/0)
-    - USE_REDIS_CACHE: Whether to use Redis for cache persistence (default: true)
-    - REDIS_KEY_PREFIX: Prefix for all Redis keys (default: lumos:cache:)
-    - REDIS_EXPIRE_SECONDS: TTL for cache entries in seconds, 0 means no expiry (default: 0)
-    - CACHE_FALLBACK_TO_LOCAL: Whether to fall back to local cache if Redis fails (default: true)
-    """
     
     _instance = None
     _redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -42,29 +31,14 @@ class InMemoryCache:
     
     @classmethod
     def get_instance(cls, force_new=False):
-        """
-        Get singleton instance of the cache
         
-        Args:
-            force_new (bool): If True, create a new instance even if one already exists
-                             This is useful for testing or resetting the cache
-        """
         if cls._instance is None or force_new:
             cls._instance = InMemoryCache()
         return cls._instance
     
     @classmethod
     def configure(cls, redis_url=None, use_redis=None, key_prefix=None, expire_seconds=None, fallback_to_local=None):
-        """
-        Configure the cache settings
-        
-        Args:
-            redis_url (str, optional): Redis connection URL
-            use_redis (bool, optional): Whether to use Redis
-            key_prefix (str, optional): Prefix for all Redis keys
-            expire_seconds (int, optional): TTL for cache entries
-            fallback_to_local (bool, optional): Whether to use local cache as fallback
-        """
+
         if redis_url is not None:
             cls._redis_url = redis_url
         if use_redis is not None:
@@ -76,33 +50,17 @@ class InMemoryCache:
         if fallback_to_local is not None:
             cls._fallback_to_local = fallback_to_local
         
-        # If we already have an instance, update its connection
         if cls._instance is not None:
             cls._instance._setup_redis_connection()
     
     def __init__(self):
         self._lock = threading.RLock()
         
-        # Local cache as fallback
-        self._local_ticks: Dict[str, Dict[str, Any]] = {}
-        self._local_ohlc: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        self._local_metrics: Dict[str, SymbolMetrics] = {}
-        self._local_snapshot: Optional[MarketSnapshot] = None
-        self._local_last_update_time: Dict[str, datetime] = {}
-        self._local_stats = {
-            "tick_updates": 0,
-            "ohlc_updates": 0,
-            "metrics_updates": 0,
-            "snapshot_updates": 0,
-            "last_access": None
-        }
-        
-        # Redis connection
         self._redis = None
         self._setup_redis_connection()
     
     def _setup_redis_connection(self):
-        """Initialize Redis connection if enabled"""
+
         if self._use_redis:
             try:
                 self._redis = redis.from_url(
@@ -110,11 +68,9 @@ class InMemoryCache:
                     socket_connect_timeout=self._connection_timeout,
                     socket_timeout=self._connection_timeout
                 )
-                # Test connection
                 self._redis.ping()
                 logger.info(f"Connected to Redis at {self._redis_url}")
                 
-                # Initialize cache stats in Redis if they don't exist
                 if not self._redis.exists(f"{self._key_prefix}stats"):
                     self._redis.hset(f"{self._key_prefix}stats", "tick_updates", 0)
                     self._redis.hset(f"{self._key_prefix}stats", "ohlc_updates", 0)
@@ -131,7 +87,6 @@ class InMemoryCache:
                     raise RuntimeError(f"Failed to connect to Redis and fallback is disabled: {e}")
     
     def _serialize(self, data):
-        """Serialize data for Redis storage"""
         try:
             return pickle.dumps(data)
         except Exception as e:
@@ -139,7 +94,6 @@ class InMemoryCache:
             return None
     
     def _deserialize(self, data):
-        """Deserialize data from Redis storage"""
         if data is None:
             return None
         try:
@@ -151,30 +105,21 @@ class InMemoryCache:
     def update_tick(self, symbol: str, tick_data: Dict[str, Any]) -> None:
         with self._lock:
             now = datetime.now()
-            
-            # Update local cache
             self._local_ticks[symbol] = tick_data
             self._local_last_update_time["tick"] = now
             self._local_stats["tick_updates"] += 1
-            
-            # Update Redis if enabled
+
             if self._use_redis and self._redis:
                 try:
-                    # Store tick data with symbol as key
                     key = f"{self._key_prefix}tick:{symbol}"
                     self._redis.set(key, self._serialize(tick_data))
                     
-                    # Apply expiration if configured
                     if self._expire_seconds > 0:
                         self._redis.expire(key, self._expire_seconds)
                     
-                    # Update last update time
                     self._redis.hset(f"{self._key_prefix}last_update_time", "tick", self._serialize(now))
                     
-                    # Increment stats counter
                     self._redis.hincrby(f"{self._key_prefix}stats", "tick_updates", 1)
-                    
-                    # Add symbol to list of available symbols
                     self._redis.sadd(f"{self._key_prefix}symbols", symbol)
                 except Exception as e:
                     logger.error(f"Redis error in update_tick: {e}")
@@ -182,32 +127,22 @@ class InMemoryCache:
     def update_ohlc(self, symbol: str, interval: str, ohlc_data: Dict[str, Any]) -> None:
         with self._lock:
             now = datetime.now()
-            
-            # Update local cache
             if symbol not in self._local_ohlc:
                 self._local_ohlc[symbol] = {}
             self._local_ohlc[symbol][interval] = ohlc_data
             self._local_last_update_time["ohlc"] = now
             self._local_stats["ohlc_updates"] += 1
             
-            # Update Redis if enabled
             if self._use_redis and self._redis:
                 try:
-                    # Store OHLC data with symbol and interval as key
                     key = f"{self._key_prefix}ohlc:{symbol}:{interval}"
                     self._redis.set(key, self._serialize(ohlc_data))
                     
-                    # Apply expiration if configured
                     if self._expire_seconds > 0:
                         self._redis.expire(key, self._expire_seconds)
-                    
-                    # Update last update time
+                
                     self._redis.hset(f"{self._key_prefix}last_update_time", "ohlc", self._serialize(now))
-                    
-                    # Increment stats counter
                     self._redis.hincrby(f"{self._key_prefix}stats", "ohlc_updates", 1)
-                    
-                    # Add symbol and interval to sets for tracking
                     self._redis.sadd(f"{self._key_prefix}symbols", symbol)
                     self._redis.sadd(f"{self._key_prefix}intervals:{symbol}", interval)
                 except Exception as e:
@@ -216,30 +151,20 @@ class InMemoryCache:
     def update_metrics(self, symbol: str, metrics: SymbolMetrics) -> None:
         with self._lock:
             now = datetime.now()
-            
-            # Update local cache
             self._local_metrics[symbol] = metrics
             self._local_last_update_time["metrics"] = now
             self._local_stats["metrics_updates"] += 1
             
-            # Update Redis if enabled
             if self._use_redis and self._redis:
                 try:
-                    # Store metrics data
+
                     key = f"{self._key_prefix}metrics:{symbol}"
                     self._redis.set(key, self._serialize(metrics))
-                    
-                    # Apply expiration if configured
                     if self._expire_seconds > 0:
                         self._redis.expire(key, self._expire_seconds)
-                    
-                    # Update last update time
+
                     self._redis.hset(f"{self._key_prefix}last_update_time", "metrics", self._serialize(now))
-                    
-                    # Increment stats counter
                     self._redis.hincrby(f"{self._key_prefix}stats", "metrics_updates", 1)
-                    
-                    # Add symbol to set
                     self._redis.sadd(f"{self._key_prefix}symbols", symbol)
                 except Exception as e:
                     logger.error(f"Redis error in update_metrics: {e}")
@@ -248,26 +173,19 @@ class InMemoryCache:
         with self._lock:
             now = datetime.now()
             
-            # Update local cache
             self._local_snapshot = snapshot
             self._local_last_update_time["snapshot"] = now
             self._local_stats["snapshot_updates"] += 1
             
-            # Update Redis if enabled
             if self._use_redis and self._redis:
                 try:
-                    # Store snapshot
                     key = f"{self._key_prefix}snapshot"
                     self._redis.set(key, self._serialize(snapshot))
-                    
-                    # Apply expiration if configured
+            
                     if self._expire_seconds > 0:
                         self._redis.expire(key, self._expire_seconds)
-                    
-                    # Update last update time
+                
                     self._redis.hset(f"{self._key_prefix}last_update_time", "snapshot", self._serialize(now))
-                    
-                    # Increment stats counter
                     self._redis.hincrby(f"{self._key_prefix}stats", "snapshot_updates", 1)
                 except Exception as e:
                     logger.error(f"Redis error in update_snapshot: {e}")
@@ -275,11 +193,8 @@ class InMemoryCache:
     def get_tick(self, symbol: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             now = datetime.now()
-            
-            # Update access time
             self._local_stats["last_access"] = now
-            
-            # Try Redis first if enabled
+    
             if self._use_redis and self._redis:
                 try:
                     self._redis.hset(f"{self._key_prefix}stats", "last_access", self._serialize(now))
@@ -289,8 +204,6 @@ class InMemoryCache:
                 except Exception as e:
                     logger.error(f"Redis error in get_tick: {e}")
             
-            # Fall back to local cache
-            return self._local_ticks.get(symbol)
     
     def get_all_ticks(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
@@ -298,7 +211,7 @@ class InMemoryCache:
             self._local_stats["last_access"] = now
             result = {}
             
-            # Try Redis first if enabled
+
             if self._use_redis and self._redis:
                 try:
                     self._redis.hset(f"{self._key_prefix}stats", "last_access", self._serialize(now))
@@ -308,15 +221,12 @@ class InMemoryCache:
                         data = self._redis.get(f"{self._key_prefix}tick:{symbol_str}")
                         if data:
                             result[symbol_str] = self._deserialize(data)
-                    
-                    # If we got data from Redis, return it
+                
                     if result:
                         return result
                 except Exception as e:
                     logger.error(f"Redis error in get_all_ticks: {e}")
             
-            # Fall back to local cache
-            return {k: v.copy() for k, v in self._local_ticks.items()}
     
     def get_ohlc(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -330,11 +240,9 @@ class InMemoryCache:
                     data = self._redis.get(f"{self._key_prefix}ohlc:{symbol}:{interval}")
                     if data:
                         return self._deserialize(data)
+                    
                 except Exception as e:
                     logger.error(f"Redis error in get_ohlc: {e}")
-            
-            # Fall back to local cache
-            return self._local_ohlc.get(symbol, {}).get(interval)
     
     def get_all_ohlc(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
         with self._lock:
@@ -342,7 +250,6 @@ class InMemoryCache:
             self._local_stats["last_access"] = now
             result = {}
             
-            # Try Redis first if enabled
             if self._use_redis and self._redis:
                 try:
                     self._redis.hset(f"{self._key_prefix}stats", "last_access", self._serialize(now))
@@ -359,27 +266,16 @@ class InMemoryCache:
                                 data = self._redis.get(f"{self._key_prefix}ohlc:{symbol_str}:{interval_str}")
                                 if data:
                                     result[symbol_str][interval_str] = self._deserialize(data)
-                    
-                    # If we got data from Redis, return it
                     if result:
                         return result
                 except Exception as e:
                     logger.error(f"Redis error in get_all_ohlc: {e}")
-            
-            # Fall back to local cache
-            result = {}
-            for symbol, intervals in self._local_ohlc.items():
-                result[symbol] = {}
-                for interval, data in intervals.items():
-                    result[symbol][interval] = data.copy()
-            return result
     
     def get_metrics(self, symbol: str) -> Optional[SymbolMetrics]:
         with self._lock:
             now = datetime.now()
             self._local_stats["last_access"] = now
-            
-            # Try Redis first if enabled
+
             if self._use_redis and self._redis:
                 try:
                     self._redis.hset(f"{self._key_prefix}stats", "last_access", self._serialize(now))
@@ -389,7 +285,6 @@ class InMemoryCache:
                 except Exception as e:
                     logger.error(f"Redis error in get_metrics: {e}")
             
-            # Fall back to local cache
             return self._local_metrics.get(symbol)
     
     def get_all_metrics(self) -> Dict[str, SymbolMetrics]:
@@ -398,7 +293,6 @@ class InMemoryCache:
             self._local_stats["last_access"] = now
             result = {}
             
-            # Try Redis first if enabled
             if self._use_redis and self._redis:
                 try:
                     self._redis.hset(f"{self._key_prefix}stats", "last_access", self._serialize(now))
@@ -409,22 +303,17 @@ class InMemoryCache:
                         data = self._redis.get(f"{self._key_prefix}metrics:{symbol_str}")
                         if data:
                             result[symbol_str] = self._deserialize(data)
-                    
-                    # If we got data from Redis, return it
+        
                     if result:
                         return result
                 except Exception as e:
                     logger.error(f"Redis error in get_all_metrics: {e}")
-            
-            # Fall back to local cache
-            return self._local_metrics.copy()
     
     def get_snapshot(self) -> Optional[MarketSnapshot]:
         with self._lock:
             now = datetime.now()
             self._local_stats["last_access"] = now
             
-            # Try Redis first if enabled
             if self._use_redis and self._redis:
                 try:
                     self._redis.hset(f"{self._key_prefix}stats", "last_access", self._serialize(now))
@@ -442,12 +331,10 @@ class InMemoryCache:
             now = datetime.now()
             self._local_stats["last_access"] = now
             
-            # Try Redis first if enabled
             if self._use_redis and self._redis:
                 try:
                     self._redis.hset(f"{self._key_prefix}stats", "last_access", self._serialize(now))
-                    
-                    # Get stats from Redis
+                
                     stats = {}
                     redis_stats = self._redis.hgetall(f"{self._key_prefix}stats")
                     for k, v in redis_stats.items():
@@ -457,18 +344,15 @@ class InMemoryCache:
                         else:
                             stats[k_str] = self._deserialize(v)
                     
-                    # Add counts
                     symbols = self._redis.smembers(f"{self._key_prefix}symbols")
                     symbol_count = len(symbols)
                     
-                    # Count OHLC entries
                     ohlc_count = 0
                     for symbol in symbols:
                         symbol_str = symbol.decode('utf-8') if isinstance(symbol, bytes) else symbol
                         intervals = self._redis.smembers(f"{self._key_prefix}intervals:{symbol_str}")
                         ohlc_count += len(intervals)
                     
-                    # Get last update times
                     last_update_times = {}
                     redis_update_times = self._redis.hgetall(f"{self._key_prefix}last_update_time")
                     for k, v in redis_update_times.items():
@@ -490,48 +374,15 @@ class InMemoryCache:
                 except Exception as e:
                     logger.error(f"Redis error in get_stats: {e}")
             
-            # Fall back to local cache
-            stats = self._local_stats.copy()
-            stats.update({
-                "tick_count": len(self._local_ticks),
-                "ohlc_count": sum(len(intervals) for intervals in self._local_ohlc.values()),
-                "metrics_count": len(self._local_metrics),
-                "last_update_times": {k: v.isoformat() for k, v in self._local_last_update_time.items()},
-                "using_redis": False
-            })
-            return stats
     
     def flush_cache(self) -> bool:
-        """
-        Clear all cached data both in Redis and local memory
-        
-        Returns:
-            bool: True if operation was successful
-        """
         with self._lock:
-            # Clear local cache
-            self._local_ticks = {}
-            self._local_ohlc = {}
-            self._local_metrics = {}
-            self._local_snapshot = None
-            self._local_last_update_time = {}
-            self._local_stats = {
-                "tick_updates": 0,
-                "ohlc_updates": 0,
-                "metrics_updates": 0,
-                "snapshot_updates": 0,
-                "last_access": datetime.now()
-            }
-            
-            # Clear Redis cache if enabled
             if self._use_redis and self._redis:
                 try:
-                    # Get all keys with our prefix and delete them
                     keys = self._redis.keys(f"{self._key_prefix}*")
                     if keys:
                         self._redis.delete(*keys)
-                    
-                    # Reinitialize stats in Redis
+
                     self._redis.hset(f"{self._key_prefix}stats", "tick_updates", 0)
                     self._redis.hset(f"{self._key_prefix}stats", "ohlc_updates", 0)
                     self._redis.hset(f"{self._key_prefix}stats", "metrics_updates", 0)
@@ -544,47 +395,11 @@ class InMemoryCache:
                     return False
             return True
     
-    def check_redis_connection(self) -> bool:
-        """
-        Check if Redis connection is active and working
-        
-        Returns:
-            bool: True if connection is working
-        """
-        if not self._use_redis:
-            return False
-            
-        try:
-            if self._redis:
-                self._redis.ping()
-                return True
-            else:
-                self._setup_redis_connection()
-                return self._redis is not None
-        except Exception as e:
-            logger.error(f"Redis connection check failed: {e}")
-            return False
-    
     def get_serializable_stats(self) -> Dict[str, Any]:
-        """
-        Get cache statistics in a JSON-serializable format
-        
-        Returns:
-            dict: Cache statistics with all values converted to JSON-serializable types
-        """
         stats = self.get_stats()
         return self._make_serializable(stats)
     
     def _make_serializable(self, obj):
-        """
-        Convert an object to a JSON-serializable format by handling datetime objects
-        
-        Args:
-            obj: Object to convert
-            
-        Returns:
-            JSON-serializable version of the object
-        """
         if isinstance(obj, dict):
             return {k: self._make_serializable(v) for k, v in obj.items()}
         elif isinstance(obj, list):
@@ -594,36 +409,6 @@ class InMemoryCache:
         else:
             return obj
         
-    def get_redis_info(self) -> Dict[str, Any]:
-        """
-        Get information about the Redis connection and cache configuration
-        
-        Returns:
-            dict: Information about Redis connection and configuration
-        """
-        info = {
-            "use_redis": self._use_redis,
-            "redis_url": self._redis_url.replace(":".join(self._redis_url.split(":")[1:2]), ":*****"),  # Hide password
-            "key_prefix": self._key_prefix,
-            "expire_seconds": self._expire_seconds,
-            "fallback_to_local": self._fallback_to_local,
-            "connected": False
-        }
-        
-        if self._use_redis and self._redis:
-            try:
-                redis_info = self._redis.info()
-                info.update({
-                    "connected": True,
-                    "redis_version": redis_info.get("redis_version", "unknown"),
-                    "used_memory_human": redis_info.get("used_memory_human", "unknown"),
-                    "connected_clients": redis_info.get("connected_clients", 0),
-                    "uptime_in_seconds": redis_info.get("uptime_in_seconds", 0)
-                })
-            except Exception as e:
-                logger.error(f"Failed to get Redis info: {e}")
-        
-        return info
 
 class AggregatorWorker:
     
@@ -638,10 +423,7 @@ class AggregatorWorker:
         self.last_processed_time = None
         self.worker_status = "idle"
         
-        # Thread pool for handling aggregation tasks
         self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix=f"{name}_pool")
-        
-        # Cache reference
         self.cache = InMemoryCache.get_instance()
     
     def start(self) -> bool:
@@ -759,7 +541,7 @@ class AggregatorWorker:
     
     def _worker_loop(self):
         last_snapshot_time = datetime.now()
-        snapshot_interval = 5.0  # Generate snapshot every 5 seconds
+        snapshot_interval = 5.0
         
         while self.running:
             try:
@@ -845,7 +627,7 @@ class AggregatorWorker:
             
     def _update_metrics_from_ohlc(self, symbol: str, interval: str, ohlc_data: Dict[str, Any]) -> None:
         try:
-            # Make sure we have valid data
+
             if not ohlc_data:
                 logger.warning(f"Empty OHLC data for {symbol}")
                 return
@@ -858,7 +640,6 @@ class AggregatorWorker:
                     last_updated=datetime.now()
                 )
             
-            # Ensure we're working with float values, not strings
             try:
                 open_price = float(ohlc_data.get("open", 0.0))
                 close_price = float(ohlc_data.get("close", 0.0))
@@ -876,9 +657,7 @@ class AggregatorWorker:
             if open_price > 0:
                 pct_change = ((close_price - open_price) / open_price) * 100
                 
-                # Map granularity to interval if needed
                 if isinstance(interval, (int, float)) or interval.isdigit():
-                    # Convert granularity to interval string
                     granularity_map = {
                         '60': "1m",
                         '300': "5m",
@@ -889,7 +668,6 @@ class AggregatorWorker:
                     }
                     interval = granularity_map.get(str(interval), "1m")
                 
-                # Update metrics based on interval
                 if interval == "1m":
                     metrics.price_change_1m = pct_change
                     metrics.volume_1m = volume
@@ -902,7 +680,6 @@ class AggregatorWorker:
                 elif interval == "1h":
                     metrics.price_change_1h = pct_change
                 
-                # Simple directional bias based on price changes
                 if metrics.price_change_1h > 0.5:
                     metrics.directional_bias = DirectionalBias.BULL
                 elif metrics.price_change_1h < -0.5:
@@ -910,31 +687,24 @@ class AggregatorWorker:
                 else:
                     metrics.directional_bias = DirectionalBias.NEUTRAL
                     
-                # Update volatility (simple high-low range as percentage of open)
                 if open_price > 0:
                     high = float(ohlc_data.get("high", open_price))
                     low = float(ohlc_data.get("low", open_price))
                     metrics.volatility = ((high - low) / open_price) * 100
             
-            # Save updated metrics to cache
             self.cache.update_metrics(symbol, metrics)
             
         except Exception as e:
             logger.error(f"Error updating metrics from OHLC for {symbol}: {e}")
             
     def _generate_market_snapshot(self) -> None:
-        """
-        Generate a market snapshot from current metrics
-        """
+
         try:
             all_metrics = self.cache.get_all_metrics()
             if not all_metrics:
                 return
                 
-            # Create lists for top gainers, losers, and volume
             symbols_list = list(all_metrics.keys())
-            
-            # Sort symbols by metrics
             gainers = sorted(symbols_list, 
                              key=lambda s: all_metrics[s].price_change_1h, 
                              reverse=True)[:5]
@@ -945,8 +715,7 @@ class AggregatorWorker:
             volume_leaders = sorted(symbols_list, 
                                    key=lambda s: all_metrics[s].volume_15m, 
                                    reverse=True)[:5]
-            
-            # Create and store snapshot
+
             snapshot = MarketSnapshot(
                 timestamp=datetime.now(),
                 symbols={symbol: metrics for symbol, metrics in all_metrics.items()},
@@ -964,13 +733,7 @@ class AggregatorWorker:
 
 # Public API function for accessing market data
 def get_market_data() -> Dict[str, Any]:
-    """
-    Get consolidated market data from the cache.
-    This is the main function for accessing market data by other components.
     
-    Returns:
-        Dict[str, Any]: Consolidated market data from cache
-    """
     try:
         processor = MarketAggregatorProcessor.get_instance()
         return processor.get_market_data()
@@ -987,7 +750,7 @@ class MarketAggregatorProcessor:
     
     @classmethod
     def get_instance(cls):
-        """Get singleton instance of the processor"""
+
         if cls._instance is None:
             raise RuntimeError("MarketAggregatorProcessor not initialized")
         return cls._instance
@@ -995,45 +758,29 @@ class MarketAggregatorProcessor:
     @classmethod
     def initialize(cls, market_stream: MarketStream, process_callback: Optional[Callable[[Dict[str, Any]], None]] = None, 
                  worker_name: str = "market_aggregator_worker"):
-        """Initialize the singleton instance"""
+
         if cls._instance is None:
             cls._instance = MarketAggregatorProcessor(market_stream, process_callback, worker_name)
         return cls._instance
     
     def __init__(self, market_stream: MarketStream, process_callback: Optional[Callable[[Dict[str, Any]], None]] = None, 
                 worker_name: str = "market_aggregator_worker"):
-        """
-        Initialize the market aggregator processor
-        
-        Args:
-            market_stream: The market stream to subscribe to
-            process_callback: Optional callback function for processing market data
-            worker_name: Name of the worker for registration
-        """
+
         self.market_stream = market_stream
         self.worker = AggregatorWorker(process_callback, name=worker_name)
         self.worker_name = worker_name
         self.cache = InMemoryCache.get_instance()
         
-        # Set as singleton instance
         if MarketAggregatorProcessor._instance is None:
             MarketAggregatorProcessor._instance = self
         
     def start(self) -> bool:
-        """
-        Start the processor
-        
-        Returns:
-            bool: True if started successfully, False otherwise
-        """
+
         if not self.worker.start():
             return False
 
-        # Subscribe to market events
         self.market_stream.add_callback("tick", self._handle_tick)
         self.market_stream.add_callback("ohlc", self._handle_ohlc)
-
-        # Register with worker manager
         worker_manager = WorkerManager.get_instance()
         worker_manager.register_worker(self.worker_name, self.worker)
         
@@ -1041,12 +788,11 @@ class MarketAggregatorProcessor:
         return True
     
     def is_alive(self) -> bool:
-        """Check if worker is alive"""
+
         return self.worker.is_alive()
         
     def stop(self):
-        """Stop the worker and remove callbacks"""
-        # Remove callbacks
+
         self.market_stream.remove_callback("tick", self._handle_tick)
         self.market_stream.remove_callback("ohlc", self._handle_ohlc)
         
@@ -1056,36 +802,21 @@ class MarketAggregatorProcessor:
         logger.info("Market aggregator processor stopped")
     
     def _handle_tick(self, data: Dict[str, Any]):
-        """Handle tick data from market stream"""
-        # Add to worker queue for processing
+
         self.worker.add_tick(data)
     
     def _handle_ohlc(self, data: Dict[str, Any]):
-        """Handle OHLC data from market stream"""
-        # Add to worker queue for processing
+
         self.worker.add_ohlc(data)
     
     def get_status(self) -> Dict[str, Any]:
-        """Get the current status of the processor"""
+
         return self.worker.get_status()
     
     def get_market_data(self) -> Dict[str, Any]:
-        """
-        Get consolidated market data - main API for other components
-        
-        Returns:
-            Dict[str, Any]: Consolidated market data including ticks, OHLC, and metrics
-        """
+
         return self.worker.get_market_data()
     
     def get_symbol_data(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        Get data for a specific symbol
-        
-        Args:
-            symbol: Symbol to get data for
-            
-        Returns:
-            Optional[Dict[str, Any]]: Symbol data or None if not found
-        """
+
         return self.worker.get_symbol_data(symbol)
